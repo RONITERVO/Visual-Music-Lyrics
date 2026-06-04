@@ -793,7 +793,13 @@ async function handleStripeWebhook(req: express.Request, res: express.Response) 
   const signature = req.headers["stripe-signature"];
   if (!signature) throw new PublicError("Missing Stripe signature.", 400);
 
-  const event = stripe.webhooks.constructEvent(req.body, signature, STRIPE_WEBHOOK_SECRET);
+  const rawBody = (req as express.Request & { rawBody?: Buffer | string }).rawBody;
+  const payload = Buffer.isBuffer(rawBody) || typeof rawBody === "string"
+    ? rawBody
+    : (Buffer.isBuffer(req.body) || typeof req.body === "string" ? req.body : null);
+  if (!payload) throw new PublicError("Stripe webhook raw body is unavailable.", 400);
+
+  const event = stripe.webhooks.constructEvent(payload, signature, STRIPE_WEBHOOK_SECRET);
   controlLog("billing.webhook_received", {
     eventId: event.id,
     eventType: event.type,
