@@ -9,11 +9,9 @@ export interface GlobalState {
   selectedAudioId: string | null;
   segments: any[];
   currentSegmentIndex: number;
-  elevenLabsApiKey: string;
   sourceLanguage: string;
   targetLanguage: string;
   translationEnabled: boolean;
-  youtubeApiKey: string;
   allowAutomaticYoutubeCaptions: boolean;
   scribeStatus: "idle" | "preparing" | "streaming" | "translating" | "saved" | "error";
   scribeMessage: string;
@@ -38,11 +36,9 @@ export const useStore = create<GlobalState>((set) => ({
   selectedAudioId: null,
   segments: [],
   currentSegmentIndex: -1,
-  elevenLabsApiKey: "",
   sourceLanguage: "",
   targetLanguage: "en",
   translationEnabled: true,
-  youtubeApiKey: "",
   allowAutomaticYoutubeCaptions: false,
   scribeStatus: "idle",
   scribeMessage: "",

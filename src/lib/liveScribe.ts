@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0 */
 
 import { buildWebSocketUrl } from './api';
+import { getFirebaseIdToken } from './firebase';
 import { getAudioMimeType } from "./utils";
 
 export interface LiveScribeCallbacks {
@@ -38,11 +39,11 @@ function getLiveScribeUrl() {
 
 export function createLiveScribeSession(options: {
   file: File;
-  apiKey?: string;
   sourceLanguage?: string;
   previousText?: string;
   keyterms?: string[];
   startSeconds?: number;
+  estimatedDurationSeconds?: number;
 }, callbacks: LiveScribeCallbacks = {}): LiveScribeSession {
   const ws = new WebSocket(getLiveScribeUrl());
   const pendingCommits: number[] = [];
@@ -70,18 +71,20 @@ export function createLiveScribeSession(options: {
     callbacks.onStatus?.("preparing", "Preparing audio");
     try {
       const audioBase64 = await fileToBase64(options.file);
+      const authToken = await getFirebaseIdToken().catch(() => "");
       if (intentionallyClosed) return;
 
       sendJson({
         type: "start",
         audioBase64,
+        authToken,
         mimeType: getAudioMimeType(options.file),
         fileName: options.file.name,
-        apiKey: options.apiKey || "",
         sourceLanguage: options.sourceLanguage || "",
         previousText: options.previousText || "Song lyrics",
         keyterms: options.keyterms || [],
         startSeconds: Number.isFinite(options.startSeconds) ? options.startSeconds : 0,
+        estimatedDurationSeconds: Number.isFinite(options.estimatedDurationSeconds) ? options.estimatedDurationSeconds : 0,
       });
       startSent = true;
 
@@ -153,7 +156,7 @@ export function createLiveScribeSession(options: {
 
   ws.addEventListener("error", () => {
     if (!intentionallyClosed && !finished) {
-      callbacks.onError?.("Could not connect to the local Scribe stream.");
+      callbacks.onError?.("Could not connect to the Scribe stream.");
     }
   });
 

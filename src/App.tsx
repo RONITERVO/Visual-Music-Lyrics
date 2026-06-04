@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0 */
 
 import { useEffect, useRef, useState } from "react";
+import { LogIn, LogOut } from "lucide-react";
 import { GraphiteDesignSystem } from "./lib/graphics/GraphiteEngine";
 import { useStore } from "./lib/store";
 import { PlayerView } from "./components/PlayerView";
@@ -9,6 +10,13 @@ import { getDroppedFiles } from "./lib/fileSystem";
 import { handleGlobalDroppedFiles, loadSongSegments } from "./lib/fileHandlers";
 import { restorePersistedLibrary, persistLibrary, loadSettings, saveSettings } from "./lib/persistence";
 import { fetchBackendHealth, shouldUseHostedBackend } from "./lib/api";
+import {
+  isFirebaseConfigured,
+  onFirebaseAuthStateChanged,
+  signInWithGoogle,
+  signOutFirebase,
+  type FirebaseUser,
+} from "./lib/firebase";
 
 const BACKEND_HEARTBEAT_INTERVAL_MS = 4 * 60 * 1000;
 const BACKEND_WARMUP_TIMEOUT_MS = 75_000;
@@ -17,10 +25,10 @@ const BACKEND_WARMUP_RETRY_DELAY_MS = 2_500;
 
 function getBackendWarmMessage(attempt: number) {
   if (attempt > 1) {
-    return "Still waking backend. Render free instances can take about a minute.";
+    return "Still preparing media services.";
   }
 
-  return "Waking backend before song upload.";
+  return "Preparing media services before song upload.";
 }
 
 function getBackendErrorMessage(error: unknown) {
@@ -101,6 +109,10 @@ async function waitForBackendReady(signal: AbortSignal, onAttempt: (attempt: num
 
 export default function App() {
   const backendSessionEnabled = shouldUseHostedBackend();
+  const authEnabled = isFirebaseConfigured();
+  const [authReady, setAuthReady] = useState(!authEnabled);
+  const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
+  const [authError, setAuthError] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const [backendWarmState, setBackendWarmState] = useState<"warming" | "ready" | "error">(
     backendSessionEnabled ? "warming" : "ready"
@@ -110,10 +122,40 @@ export default function App() {
   );
   const [backendWarmNonce, setBackendWarmNonce] = useState(0);
   const canAcceptDropsRef = useRef(!backendSessionEnabled);
+  const isAuthBlocked = authEnabled && (!authReady || !authUser);
 
   useEffect(() => {
-    canAcceptDropsRef.current = !backendSessionEnabled || backendWarmState === "ready";
-  }, [backendSessionEnabled, backendWarmState]);
+    canAcceptDropsRef.current = (!backendSessionEnabled || backendWarmState === "ready") && !isAuthBlocked;
+  }, [backendSessionEnabled, backendWarmState, isAuthBlocked]);
+
+  useEffect(() => {
+    if (!authEnabled) return;
+
+    setAuthReady(false);
+    return onFirebaseAuthStateChanged((user) => {
+      setAuthUser(user);
+      setAuthReady(true);
+      setAuthError("");
+    });
+  }, [authEnabled]);
+
+  const handleSignIn = async () => {
+    setAuthError("");
+    try {
+      await signInWithGoogle();
+    } catch (error: any) {
+      setAuthError(String(error?.message || error || "Google sign-in failed."));
+    }
+  };
+
+  const handleSignOut = async () => {
+    setAuthError("");
+    try {
+      await signOutFirebase();
+    } catch (error: any) {
+      setAuthError(String(error?.message || error || "Sign-out failed."));
+    }
+  };
 
   useEffect(() => {
     if (!backendSessionEnabled) {
@@ -198,11 +240,9 @@ export default function App() {
       }
 
       if (
-        state.elevenLabsApiKey !== prevState.elevenLabsApiKey ||
         state.sourceLanguage !== prevState.sourceLanguage ||
         state.targetLanguage !== prevState.targetLanguage ||
         state.translationEnabled !== prevState.translationEnabled ||
-        state.youtubeApiKey !== prevState.youtubeApiKey ||
         state.allowAutomaticYoutubeCaptions !== prevState.allowAutomaticYoutubeCaptions
       ) {
         saveSettings(state);
@@ -260,6 +300,30 @@ export default function App() {
     <>
       <PlayerView />
 
+      {authEnabled && authReady && authUser && (
+        <div className="fixed right-3 top-3 z-[90] flex max-w-[min(420px,calc(100vw-1.5rem))] items-center gap-2 rounded-[8px] border border-ink-graphite/15 bg-paper-light/95 px-3 py-2 text-ink-graphite shadow-lg backdrop-blur-md">
+          {authUser.photoURL && (
+            <img
+              src={authUser.photoURL}
+              alt=""
+              className="h-7 w-7 rounded-full border border-ink-graphite/15"
+              referrerPolicy="no-referrer"
+            />
+          )}
+          <span className="min-w-0 flex-1 truncate font-body text-[0.88rem]">
+            {authUser.displayName || authUser.email || "Signed in"}
+          </span>
+          <button
+            type="button"
+            className="grid h-8 w-8 place-items-center rounded-[6px] text-ink-graphite-light transition hover:bg-ink-blueprint/10 hover:text-ink-blueprint"
+            title="Sign out"
+            onClick={handleSignOut}
+          >
+            <LogOut size={17} />
+          </button>
+        </div>
+      )}
+
       {backendSessionEnabled && backendWarmState !== "ready" && (
         <div className="fixed inset-0 z-[110] grid place-items-center bg-black/65 backdrop-blur-sm">
           <div className="grid w-[min(460px,92vw)] gap-4 rounded-2xl border border-ink-blueprint/30 bg-paper-light/95 p-6 text-center text-ink-graphite shadow-2xl">
@@ -271,10 +335,10 @@ export default function App() {
               <span className="font-body text-[1rem] leading-6 text-ink-graphite-light">
                 {backendWarmState === "error"
                   ? backendWarmMessage
-                  : `${backendWarmMessage} Render free services can take up to a minute on the first request.`}
+                  : backendWarmMessage}
               </span>
               <span className="font-body text-[0.92rem] leading-6 text-ink-graphite-light">
-                The app will keep pinging the backend while this tab stays open so the session stays warm.
+                The app will keep checking readiness while this tab stays open.
               </span>
             </div>
 
@@ -288,6 +352,33 @@ export default function App() {
                   Retry backend wake-up
                 </button>
               </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {authEnabled && isAuthBlocked && (
+        <div className="fixed inset-0 z-[120] grid place-items-center bg-black/70 px-4 backdrop-blur-sm">
+          <div className="grid w-[min(420px,92vw)] gap-4 rounded-[8px] border border-ink-blueprint/25 bg-paper-light/95 p-5 text-center text-ink-graphite shadow-2xl">
+            <strong className="font-display text-[2rem] leading-none text-ink-blueprint">
+              Sign in
+            </strong>
+            <span className="font-body text-[0.98rem] leading-6 text-ink-graphite-light">
+              Google sign-in is required for translation, media import, and metered Scribe usage.
+            </span>
+            <button
+              type="button"
+              className="mx-auto inline-flex items-center justify-center gap-2 rounded-[8px] bg-ink-blueprint px-4 py-2 font-body text-[0.96rem] text-paper-light transition hover:bg-ink-blueprint/90"
+              onClick={handleSignIn}
+              disabled={!authReady}
+            >
+              <LogIn size={18} />
+              Google
+            </button>
+            {authError && (
+              <span className="break-words font-body text-[0.86rem] leading-5 text-ink-red">
+                {authError}
+              </span>
             )}
           </div>
         </div>

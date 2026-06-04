@@ -2,13 +2,14 @@
  * SPDX-License-Identifier: Apache-2.0 */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Check, Download, KeyRound, Loader2, Music2, Pause, Play, RefreshCw, RotateCcw, Search, Sparkles, Trash2, Upload, X, Youtube } from "lucide-react";
+import { Bot, Check, CreditCard, Download, Loader2, Music2, Pause, Play, RefreshCw, RotateCcw, Search, Settings, Sparkles, Trash2, Upload, X, Youtube } from "lucide-react";
 import { useStore } from "../lib/store";
 import { cleanTitle, formatBytes, formatClock, formatPreciseClock } from "../lib/utils";
 import { VisualizerEngine } from "../lib/graphics/VisualizerEngine";
 import { addAudioFiles, loadSongSegments } from "../lib/fileHandlers";
 import { createLiveScribeSession, LiveScribeSession } from "../lib/liveScribe";
 import { translateSegments } from "../lib/translate";
+import { createElevenLabsCheckoutSession, fetchElevenLabsEntitlement, type ElevenLabsEntitlement } from "../lib/billing";
 import { buildGeneratedTimingText, replaceSegmentsInRange, saveSongTiming } from "../lib/timing";
 import { exportLibrary, importLibrary, LibraryTransferProgress } from "../lib/exportImport";
 import { clearPersistedUserData } from "../lib/persistence";
@@ -80,6 +81,14 @@ function getAudioElement() {
     document.body.appendChild(audioEl);
   }
   return audioEl;
+}
+
+function formatBalanceSeconds(seconds: number) {
+  const safeSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
 }
 
 function normalizeLanguage(value: string) {
@@ -422,7 +431,6 @@ function mergeYoutubeChannelSuggestion(
 function getYoutubeChannelSuggestions(
   input: string,
   audioFiles: any[],
-  apiKey: string,
   remoteSuggestions: YoutubeChannelSuggestion[],
   limit = 6,
 ): YoutubeChannelSuggestion[] {
@@ -446,7 +454,7 @@ function getYoutubeChannelSuggestions(
   };
 
   remoteSuggestions.forEach(addSuggestion);
-  getCachedYoutubeChannelMatches(input, apiKey, limit).forEach(addSuggestion);
+  getCachedYoutubeChannelMatches(input, limit).forEach(addSuggestion);
   getLibraryYoutubeChannelSuggestions(input, audioFiles, limit).forEach(addSuggestion);
 
   return Array.from(byKey.values())
@@ -647,8 +655,6 @@ function SearchOverlay({
 }) {
   const audioFiles = useStore((state) => state.audioFiles);
   const selectedAudioId = useStore((state) => state.selectedAudioId);
-  const elevenLabsApiKey = useStore((state) => state.elevenLabsApiKey);
-  const youtubeApiKey = useStore((state) => state.youtubeApiKey);
   const allowAutomaticYoutubeCaptions = useStore((state) => state.allowAutomaticYoutubeCaptions);
   const sourceLanguage = useStore((state) => state.sourceLanguage);
   const targetLanguage = useStore((state) => state.targetLanguage);
@@ -656,6 +662,9 @@ function SearchOverlay({
   const [isSongPickerOpen, setIsSongPickerOpen] = useState(false);
   const [youtubeRemoteChannelSuggestions, setYoutubeRemoteChannelSuggestions] = useState<YoutubeChannelSuggestion[]>([]);
   const [youtubeChannelSuggestionStatus, setYoutubeChannelSuggestionStatus] = useState<"idle" | "loading" | "ready">("idle");
+  const [entitlement, setEntitlement] = useState<ElevenLabsEntitlement | null>(null);
+  const [billingStatus, setBillingStatus] = useState<"idle" | "loading" | "checkout" | "error">("idle");
+  const [billingMessage, setBillingMessage] = useState("");
   const selectedSong = audioFiles.find((audio) => audio.id === selectedAudioId) || null;
   const isTranslationRangePreview = Boolean(isSectionMode && regenerateMode === "translate" && isTranslationRangePlaying);
   const sliderValue = isSectionMode && !isCapturing && !isTranslationRangePreview ? sectionStart : currentTime;
@@ -719,7 +728,7 @@ function SearchOverlay({
       return;
     }
 
-    const cachedSuggestions = getCachedYoutubeChannelSuggestions(input, youtubeApiKey, YOUTUBE_REMOTE_CHANNEL_SUGGESTION_LIMIT);
+    const cachedSuggestions = getCachedYoutubeChannelSuggestions(input, YOUTUBE_REMOTE_CHANNEL_SUGGESTION_LIMIT);
     if (cachedSuggestions) {
       setYoutubeRemoteChannelSuggestions(mapYoutubeRemoteChannelSuggestions(input, cachedSuggestions));
       setYoutubeChannelSuggestionStatus("ready");
@@ -734,7 +743,6 @@ function SearchOverlay({
       try {
         const suggestions = await searchYoutubeChannelSuggestions(
           input,
-          youtubeApiKey,
           controller.signal,
           YOUTUBE_REMOTE_CHANNEL_SUGGESTION_LIMIT,
         );
@@ -753,12 +761,47 @@ function SearchOverlay({
       controller.abort();
       window.clearTimeout(timeoutId);
     };
-  }, [isYoutubeChannelSuggestionQuery, query, youtubeApiKey]);
+  }, [isYoutubeChannelSuggestionQuery, query]);
+
+  useEffect(() => {
+    if (!isKeyGateOpen) return;
+
+    let canceled = false;
+    setBillingStatus("loading");
+    fetchElevenLabsEntitlement()
+      .then((nextEntitlement) => {
+        if (canceled) return;
+        setEntitlement(nextEntitlement);
+        setBillingStatus("idle");
+        setBillingMessage("");
+      })
+      .catch((error: any) => {
+        if (canceled) return;
+        setBillingStatus("error");
+        setBillingMessage(String(error?.message || error || "Could not load Scribe balance."));
+      });
+
+    return () => {
+      canceled = true;
+    };
+  }, [isKeyGateOpen]);
+
+  const handleBuyScribeHour = async () => {
+    setBillingStatus("checkout");
+    setBillingMessage("");
+    try {
+      const checkout = await createElevenLabsCheckoutSession(3600);
+      window.location.assign(checkout.url);
+    } catch (error: any) {
+      setBillingStatus("error");
+      setBillingMessage(String(error?.message || error || "Could not start checkout."));
+    }
+  };
 
   const youtubeChannelSuggestions = useMemo(() => {
     if (youtubeStatus === "loading" || youtubeRows.length > 0) return [];
-    return getYoutubeChannelSuggestions(query, audioFiles, youtubeApiKey, youtubeRemoteChannelSuggestions);
-  }, [audioFiles, query, youtubeApiKey, youtubeRemoteChannelSuggestions, youtubeRows.length, youtubeStatus]);
+    return getYoutubeChannelSuggestions(query, audioFiles, youtubeRemoteChannelSuggestions);
+  }, [audioFiles, query, youtubeRemoteChannelSuggestions, youtubeRows.length, youtubeStatus]);
 
   if (!isOpen) {
     return (
@@ -815,8 +858,8 @@ function SearchOverlay({
           >
             <Trash2 size={18} />
           </ControlIconButton>
-          <ControlIconButton label="API keys" onClick={() => setIsKeyGateOpen(!isKeyGateOpen)}>
-            <KeyRound size={18} />
+          <ControlIconButton label="Settings" onClick={() => setIsKeyGateOpen(!isKeyGateOpen)}>
+            <Settings size={18} />
           </ControlIconButton>
           <ControlIconButton label="Close search" onClick={onClose}>
             <X size={18} />
@@ -1146,18 +1189,32 @@ function SearchOverlay({
           autoComplete="off"
           onSubmit={(event) => event.preventDefault()}
         >
-          <KeyField
-            label="ElevenLabs"
-            name="elevenlabs-api-key"
-            value={elevenLabsApiKey}
-            onChange={(value) => useStore.setState({ elevenLabsApiKey: value })}
-          />
-          <KeyField
-            label="YouTube Data API (optional)"
-            name="youtube-api-key"
-            value={youtubeApiKey}
-            onChange={(value) => useStore.setState({ youtubeApiKey: value })}
-          />
+          <div className="grid gap-2 rounded-[6px] border border-ink-blueprint/15 bg-ink-blueprint/5 px-3 py-2 font-body text-[0.92rem] text-ink-graphite">
+            <div className="flex items-center justify-between gap-3">
+              <span>Scribe time</span>
+              <strong className="font-body text-[0.95rem] text-ink-blueprint">
+                {billingStatus === "loading"
+                  ? "Loading"
+                  : entitlement
+                    ? formatBalanceSeconds(entitlement.elevenLabsRemainingSeconds)
+                    : "0m"}
+              </strong>
+            </div>
+            <button
+              type="button"
+              className="inline-flex items-center justify-center gap-2 rounded-[6px] bg-ink-blueprint px-3 py-2 text-paper-light transition hover:bg-ink-blueprint/90 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={handleBuyScribeHour}
+              disabled={billingStatus === "checkout"}
+            >
+              {billingStatus === "checkout" ? <Loader2 size={16} className="animate-spin" /> : <CreditCard size={16} />}
+              Buy 1h
+            </button>
+            {billingMessage && (
+              <span className="break-words text-[0.82rem] leading-5 text-ink-red">
+                {billingMessage}
+              </span>
+            )}
+          </div>
           <label className="inline-flex flex-wrap items-center gap-2 font-body text-[0.98rem]">
             <input
               type="checkbox"
@@ -1167,7 +1224,7 @@ function SearchOverlay({
             YouTube(bad)auto caption
           </label>
           <p className="rounded-[6px] border border-ink-blueprint/15 bg-ink-blueprint/5 px-3 py-2 font-body text-[0.82rem] leading-5 text-ink-graphite">
-            Gemini Flash Lite translation uses the server key pool. Browser keys are only sent for ElevenLabs and YouTube when entered.
+            Gemini translation and media processing use server-side production credentials.
           </p>
           <div className="grid grid-cols-1 gap-2 min-[260px]:grid-cols-2">
             <label className="grid gap-1 font-body text-[0.95rem]">
@@ -1482,7 +1539,6 @@ export function PlayerView() {
   const manualCommitMarks = useStore((state) => state.manualCommitMarks);
   const lastManualCommitAt = useStore((state) => state.lastManualCommitAt);
   const commitFeedback = useStore((state) => state.commitFeedback);
-  const youtubeApiKey = useStore((state) => state.youtubeApiKey);
 
   const visualizerRef = useRef<VisualizerEngine | null>(null);
   const rafId = useRef<number>(0);
@@ -1620,7 +1676,7 @@ export function PlayerView() {
     const controller = new AbortController();
     const forceRefresh = youtubeRefreshNonce > handledYoutubeRefreshNonceRef.current && manualYoutubeRefreshInputRef.current === lookupInput;
     if (forceRefresh) handledYoutubeRefreshNonceRef.current = youtubeRefreshNonce;
-    const cached = getCachedYoutubeResolve(lookupInput, youtubeApiKey, { allowStale: true });
+    const cached = getCachedYoutubeResolve(lookupInput, { allowStale: true });
 
     if (cached) {
       setYoutubeResults(cached.result.videos);
@@ -1641,7 +1697,7 @@ export function PlayerView() {
 
     const timeoutId = window.setTimeout(async () => {
       try {
-        const result = await resolveYoutubeInput(lookupInput, youtubeApiKey, controller.signal, {
+        const result = await resolveYoutubeInput(lookupInput, controller.signal, {
           forceRefresh,
           allowCache: !forceRefresh && !cached,
         });
@@ -1667,7 +1723,7 @@ export function PlayerView() {
       controller.abort();
       window.clearTimeout(timeoutId);
     };
-  }, [audioFiles, query, youtubeApiKey, youtubeRefreshNonce]);
+  }, [audioFiles, query, youtubeRefreshNonce]);
 
   useEffect(() => {
     visualizerRef.current = new VisualizerEngine();
@@ -1825,6 +1881,11 @@ export function PlayerView() {
     const sourceLanguage = normalizeLanguage(state.sourceLanguage);
     const targetLanguage = state.targetLanguage.trim() || "en";
     const safeStartSeconds = Math.max(0, Number(startSeconds) || 0);
+    const audioDuration = Number(getAudioElement().duration) || 0;
+    const remainingAudioSeconds = Math.max(0, audioDuration - safeStartSeconds);
+    const estimatedDurationSeconds = mode === "section"
+      ? Math.min(remainingAudioSeconds, ELEVENLABS_AUTO_COMMIT_LIMIT_SECONDS)
+      : remainingAudioSeconds;
 
     commitMarksRef.current = [];
     lastCommitAtRef.current = safeStartSeconds;
@@ -1846,10 +1907,10 @@ export function PlayerView() {
     try {
       session = createLiveScribeSession({
         file: song.file,
-        apiKey: state.elevenLabsApiKey,
         sourceLanguage,
         previousText: sourceLanguage ? `Song lyrics in ${sourceLanguage}` : "Song lyrics",
         startSeconds: safeStartSeconds,
+        estimatedDurationSeconds,
       }, {
         onStatus: (status, message) => {
           if (activeSongIdRef.current !== song.id || activeModeRef.current !== mode) return;
@@ -2367,7 +2428,7 @@ export function PlayerView() {
       const captionLanguage = normalizeLanguage(importState.sourceLanguage);
       const captionTargetLanguage = importState.translationEnabled ? (importState.targetLanguage.trim() || "en") : "";
 
-      const result = await downloadYoutubeAudio(video, importState.youtubeApiKey);
+      const result = await downloadYoutubeAudio(video);
       const importedAt = new Date().toISOString();
       const addedSongs = await addAudioFiles([result.file], {
         metadata: {
@@ -2539,11 +2600,9 @@ export function PlayerView() {
         selectedAudioId: null,
         segments: [],
         currentSegmentIndex: -1,
-        elevenLabsApiKey: "",
         sourceLanguage: "",
         targetLanguage: "en",
         translationEnabled: true,
-        youtubeApiKey: "",
         allowAutomaticYoutubeCaptions: false,
         scribeStatus: "idle",
         scribeMessage: "",

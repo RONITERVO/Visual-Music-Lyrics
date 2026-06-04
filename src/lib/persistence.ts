@@ -6,20 +6,21 @@ import type { GlobalState } from "./store";
 import { clearAllSongsFromDb, getAllSongsFromDb, storeSongInDb } from "./db";
 
 const SETTINGS_KEYS = {
-    elevenLabsApiKey: "living-sketchbook:elevenlabs-api-key",
     sourceLanguage: "living-sketchbook:source-language",
     targetLanguage: "living-sketchbook:target-language",
     translationEnabled: "living-sketchbook:translation-enabled",
-    youtubeApiKey: "living-sketchbook:youtube-api-key",
     allowAutomaticYoutubeCaptions: "living-sketchbook:allow-automatic-youtube-captions",
 };
 
+const LEGACY_SECRET_KEYS = [
+    "living-sketchbook:elevenlabs-api-key",
+    "living-sketchbook:youtube-api-key",
+];
+
 type PersistedSettings = Pick<GlobalState,
-    "elevenLabsApiKey" |
     "sourceLanguage" |
     "targetLanguage" |
     "translationEnabled" |
-    "youtubeApiKey" |
     "allowAutomaticYoutubeCaptions"
 >;
 
@@ -81,18 +82,20 @@ export function saveSettings(settings = useStore.getState()) {
     }
 
     try {
-        localStorage.setItem(SETTINGS_KEYS.elevenLabsApiKey, settings.elevenLabsApiKey || "");
-        localStorage.setItem(SETTINGS_KEYS.youtubeApiKey, settings.youtubeApiKey || "");
         localStorage.setItem(SETTINGS_KEYS.allowAutomaticYoutubeCaptions, settings.allowAutomaticYoutubeCaptions ? "true" : "false");
         localStorage.setItem(SETTINGS_KEYS.sourceLanguage, settings.sourceLanguage || "");
         localStorage.setItem(SETTINGS_KEYS.targetLanguage, settings.targetLanguage || "en");
         localStorage.setItem(SETTINGS_KEYS.translationEnabled, settings.translationEnabled ? "true" : "false");
+        for (const key of LEGACY_SECRET_KEYS) localStorage.removeItem(key);
     } catch(e) {}
 }
 
 export function clearSavedSettings() {
     try {
         for (const key of Object.values(SETTINGS_KEYS)) {
+            localStorage.removeItem(key);
+        }
+        for (const key of LEGACY_SECRET_KEYS) {
             localStorage.removeItem(key);
         }
     } catch(e) {}
@@ -108,20 +111,16 @@ export async function clearPersistedUserData() {
 export function loadSettings(): PersistedSettings {
     try {
         return {
-            elevenLabsApiKey: localStorage.getItem(SETTINGS_KEYS.elevenLabsApiKey) || "",
             sourceLanguage: localStorage.getItem(SETTINGS_KEYS.sourceLanguage) || "",
             targetLanguage: localStorage.getItem(SETTINGS_KEYS.targetLanguage) || "en",
             translationEnabled: localStorage.getItem(SETTINGS_KEYS.translationEnabled) !== "false",
-            youtubeApiKey: localStorage.getItem(SETTINGS_KEYS.youtubeApiKey) || "",
             allowAutomaticYoutubeCaptions: localStorage.getItem(SETTINGS_KEYS.allowAutomaticYoutubeCaptions) === "true",
         };
     } catch(e) {
         return {
-            elevenLabsApiKey: "",
             sourceLanguage: "",
             targetLanguage: "en",
             translationEnabled: true,
-            youtubeApiKey: "",
             allowAutomaticYoutubeCaptions: false,
         };
     }

@@ -6,15 +6,9 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig} from 'vite';
 
-function resolvePagesBasePath() {
-  const rawBasePath = process.env.VITE_BASE_PATH || process.env.GITHUB_REPOSITORY?.split('/').pop() || 'Audio-visualizer-ai-studio-edition';
-  const cleanedBasePath = String(rawBasePath || '').trim().replace(/^\/+|\/+$/g, '');
-  return cleanedBasePath ? `/${cleanedBasePath}/` : '/';
-}
-
-export default defineConfig(({mode}) => {
+export default defineConfig(() => {
   return {
-    base: mode === 'pages' ? resolvePagesBasePath() : '/',
+    base: '/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
