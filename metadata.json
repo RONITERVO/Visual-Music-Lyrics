@@ -1,0 +1,6 @@
+{
+  "name": "Living Sketchbook Music",
+  "description": "A local music visualizer for synced bilingual lyrics with YouTube captions, ElevenLabs Scribe, Gemini, and Google Translate.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
