@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: 2026 Roni Tervo
+# SPDX-License-Identifier: Apache-2.0
+
+substitutions:
+  _REGION: europe-west1
+  _REPOSITORY: visual-music
+  _SERVICE: visual-music-media
+
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}:$COMMIT_SHA
+      - .
+
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --image
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}:$COMMIT_SHA
+      - --region
+      - ${_REGION}
+      - --allow-unauthenticated
+      - --memory
+      - 2Gi
+      - --cpu
+      - "2"
+      - --concurrency
+      - "4"
+      - --timeout
+      - "3600"
+      - --max-instances
+      - "20"
+      - --set-env-vars
+      - BACKEND_ONLY=true,FIREBASE_AUTH_REQUIRED=true,YOUTUBE_MAX_CONCURRENT_JOBS=1,YOUTUBE_JOB_QUEUE_LIMIT=8
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}:$COMMIT_SHA

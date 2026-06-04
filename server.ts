@@ -12,6 +12,9 @@ import ffmpegPath from "ffmpeg-static";
 import crypto from "crypto";
 import { spawn } from "child_process";
 import youtubeDl from "youtube-dl-exec";
+import { initializeApp as initializeFirebaseAdminApp, getApps as getFirebaseAdminApps } from "firebase-admin/app";
+import { getAuth as getFirebaseAdminAuth, type DecodedIdToken } from "firebase-admin/auth";
+import { FieldValue, getFirestore as getFirebaseAdminFirestore } from "firebase-admin/firestore";
 import {
   filterYoutubeCaptionTracksForPolicy,
   getYoutubeCaptionPolicy,
@@ -84,6 +87,8 @@ const YOUTUBE_CHANNEL_SUGGESTION_CACHE_FRESH_MS = 2 * 60 * 1000;
 const YOUTUBE_COOKIES_FILE_ENV = "YOUTUBE_COOKIES_FILE";
 const YOUTUBE_COOKIES_ENV = "YOUTUBE_COOKIES";
 const YOUTUBE_COOKIES_BASE64_ENV = "YOUTUBE_COOKIES_BASE64";
+const FIREBASE_AUTH_REQUIRED = parseEnvBoolean("FIREBASE_AUTH_REQUIRED", false);
+const ELEVENLABS_MIN_RESERVATION_SECONDS = parseEnvInteger("ELEVENLABS_MIN_RESERVATION_SECONDS", 60, 1, 3600);
 
 let youtubeCookiesFilePath = "";
 let youtubeCookiesSignature = "";
@@ -101,11 +106,60 @@ function parseEnvInteger(name: string, fallback: number, min: number, max: numbe
   return Math.min(max, Math.max(min, Math.floor(value)));
 }
 
+function parseEnvBoolean(name: string, fallback: boolean) {
+  const value = String(process.env[name] || "").trim().toLowerCase();
+  if (!value) return fallback;
+  return ["1", "true", "yes", "on"].includes(value);
+}
+
+type MediaLogLevel = "info" | "warn" | "error";
+
+function redactText(value: any) {
+  return String(value ?? "")
+    .replace(/xi-api-key[^\s,}]*/gi, "xi-api-key=[redacted]")
+    .replace(/key=([^&\s]+)/gi, "key=[redacted]")
+    .replace(/AIza[0-9A-Za-z_-]+/g, "[redacted-google-key]")
+    .replace(/sk_[0-9A-Za-z_-]+/g, "[redacted-key]");
+}
+
+function sanitizeLogValue(value: any): any {
+  if (value == null || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") return redactText(value).slice(0, 1000);
+  if (Array.isArray(value)) return value.slice(0, 20).map((item) => sanitizeLogValue(item));
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .slice(0, 40)
+        .map(([key, item]) => [key, sanitizeLogValue(item)])
+    );
+  }
+  return redactText(value).slice(0, 1000);
+}
+
+function hashLogId(value: any) {
+  const text = String(value || "");
+  return text ? crypto.createHash("sha256").update(text).digest("hex").slice(0, 12) : "";
+}
+
+function mediaLog(event: string, details: Record<string, any> = {}, level: MediaLogLevel = "info") {
+  const payload = sanitizeLogValue({
+    service: "visual-music-media",
+    event,
+    ...details,
+  });
+  const line = JSON.stringify(payload);
+  if (level === "error") {
+    console.error(line);
+  } else if (level === "warn") {
+    console.warn(line);
+  } else {
+    console.log(line);
+  }
+}
+
 function scribeLog(requestId: string, message: string, details: Record<string, any> = {}) {
-  const safeDetails = Object.fromEntries(
-    Object.entries(details).map(([key, value]) => [key, typeof value === "string" ? redactError(value) : value])
-  );
-  console.log(`[scribe:${requestId}] ${message}`, safeDetails);
+  const eventSuffix = message.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "event";
+  mediaLog(`scribe.${eventSuffix}`, { requestId, message, ...details });
 }
 
 class PublicError extends Error {
@@ -141,6 +195,13 @@ class AsyncTaskLimiter {
     }
 
     if (this.queue.length >= this.maxQueued) {
+      mediaLog("youtube.job_rejected", {
+        label,
+        active: this.active,
+        queued: this.queue.length,
+        maxActive: this.maxActive,
+        maxQueued: this.maxQueued,
+      }, "warn");
       return Promise.reject(new PublicError(
         "The YouTube backend is busy. Try again in a minute.",
         503,
@@ -158,8 +219,24 @@ class AsyncTaskLimiter {
 
   async run<T>(label: string, task: () => Promise<T>): Promise<T> {
     const release = await this.acquire(label);
+    const startedAt = Date.now();
     try {
-      return await task();
+      const result = await task();
+      mediaLog("youtube.job_completed", {
+        label,
+        durationMs: Date.now() - startedAt,
+      });
+      return result;
+    } catch (error) {
+      const publicError = error instanceof PublicError ? error : null;
+      mediaLog("youtube.job_failed", {
+        label,
+        durationMs: Date.now() - startedAt,
+        status: publicError?.status || 500,
+        code: publicError?.code || "",
+        error: redactError(error),
+      }, publicError && publicError.status < 500 ? "warn" : "error");
+      throw error;
     } finally {
       release();
     }
@@ -168,7 +245,7 @@ class AsyncTaskLimiter {
   private createRelease(label: string, queuedAt: number): TaskRelease {
     const waitedMs = Date.now() - queuedAt;
     if (waitedMs >= 1000) {
-      console.log(`[youtube:${label}] started after ${waitedMs}ms in queue`);
+      mediaLog("youtube.job_dequeued", { label, waitedMs });
     }
 
     let released = false;
@@ -189,11 +266,7 @@ function runYoutubeDlpJob<T>(label: string, task: () => Promise<T>) {
 }
 
 function redactError(error: any) {
-  return String(error?.message || error || "Unknown error")
-    .replace(/xi-api-key[^\s,}]*/gi, "xi-api-key=[redacted]")
-    .replace(/key=([^&\s]+)/gi, "key=[redacted]")
-    .replace(/AIza[0-9A-Za-z_-]+/g, "[redacted-google-key]")
-    .replace(/sk_[0-9A-Za-z_-]+/g, "[redacted-key]");
+  return redactText(error?.message || error || "Unknown error");
 }
 
 const MINUTE_MS = 60 * 1000;
@@ -812,7 +885,6 @@ function parseYoutubeInput(input: any): ParsedYoutubeInput | null {
 
 function getYoutubeApiKey(body: any) {
   return String(
-    body?.apiKey ||
     process.env.YOUTUBE_API_KEY ||
     process.env.YOUTUBE_DATA_API_KEY ||
     ""
@@ -1296,7 +1368,7 @@ function getYoutubeCookieHeader() {
     youtubeCookieHeaderValue = parseYoutubeCookieHeader(fs.readFileSync(filePath, "utf8"));
     return youtubeCookieHeaderValue;
   } catch (error) {
-    console.warn("YouTube cookies unavailable for caption fetch:", redactError(error));
+    mediaLog("youtube.cookies_unavailable", { error: redactError(error) }, "warn");
     youtubeCookieHeaderFilePath = "";
     youtubeCookieHeaderSignature = "";
     youtubeCookieHeaderValue = "";
@@ -1317,16 +1389,16 @@ function makeYoutubeDlpError(error: any, fallbackMessage: string) {
   if (isYoutubeAuthChallenge(message)) {
     return new PublicError(
       hasYoutubeCookieConfiguration()
-        ? "YouTube rejected the backend cookies. Refresh YOUTUBE_COOKIES_BASE64 on Render and redeploy."
-        : "YouTube blocked anonymous downloads from this backend. YOUTUBE_API_KEY can stay blank, but Render needs YOUTUBE_COOKIES_BASE64 or YOUTUBE_COOKIES_FILE for yt-dlp.",
+        ? "YouTube rejected the backend cookies. Refresh YOUTUBE_COOKIES_BASE64 on Cloud Run and redeploy."
+        : "YouTube blocked anonymous downloads from this backend. YOUTUBE_API_KEY can stay blank, but Cloud Run needs YOUTUBE_COOKIES_BASE64 or YOUTUBE_COOKIES_FILE for yt-dlp.",
       502
     );
   }
   if (isYoutubeVideoUnavailable(message)) {
     return new PublicError(
       hasYoutubeCookieConfiguration()
-        ? "YouTube says this video is unavailable to the hosted backend. If it plays in your browser, refresh YOUTUBE_COOKIES_BASE64 on Render and redeploy."
-        : "YouTube says this video is unavailable to the hosted backend. Try another video, or set YOUTUBE_COOKIES_BASE64 on Render if this video plays in your browser.",
+        ? "YouTube says this video is unavailable to the hosted backend. If it plays in your browser, refresh YOUTUBE_COOKIES_BASE64 on Cloud Run and redeploy."
+        : "YouTube says this video is unavailable to the hosted backend. Try another video, or set YOUTUBE_COOKIES_BASE64 on Cloud Run if this video plays in your browser.",
       404
     );
   }
@@ -2248,7 +2320,7 @@ async function fetchYoutubeCaptionTrack(track: YoutubeCaptionTrack) {
       if (fallbackError instanceof PublicError && fallbackError.code === "youtube_backend_busy") {
         throw fallbackError;
       }
-      console.warn("YouTube caption file fallback unavailable:", redactError(fallbackError));
+      mediaLog("youtube.caption_file_fallback_unavailable", { error: redactError(fallbackError) }, "warn");
       throw error;
     }
   }
@@ -2540,7 +2612,7 @@ async function buildYoutubeCaptionPayloadFromTrack(
           translationTrackName = youtubeTranslationTrack.name || `${requestedTargetLanguage} translated captions`;
         }
       } catch (error) {
-        console.warn("YouTube translated caption track unavailable; trying timedtext translation:", redactError(error));
+        mediaLog("youtube.translated_caption_track_unavailable", { error: redactError(error) }, "warn");
       }
     }
 
@@ -2556,7 +2628,7 @@ async function buildYoutubeCaptionPayloadFromTrack(
           translationTrackName = `${requestedTargetLanguage} from ${track.name || track.languageCode || "captions"}`;
         }
       } catch (error) {
-        console.warn("YouTube caption translation unavailable; returning source captions:", redactError(error));
+        mediaLog("youtube.caption_translation_unavailable", { error: redactError(error) }, "warn");
       }
     }
   }
@@ -2645,7 +2717,7 @@ async function fetchYoutubeCaptionPayload(
   if (errors.some((message) => isYoutubeAuthChallenge(message))) {
     throw new PublicError(
       hasYoutubeCookieConfiguration()
-        ? "YouTube rejected the backend cookies while reading captions. Refresh YOUTUBE_COOKIES_BASE64 on Render and redeploy."
+        ? "YouTube rejected the backend cookies while reading captions. Refresh YOUTUBE_COOKIES_BASE64 on Cloud Run and redeploy."
         : "YouTube blocked caption extraction from this backend. Local runs usually work; hosted backends may need YOUTUBE_COOKIES_BASE64 or a trusted outbound proxy.",
       502
     );
@@ -2660,7 +2732,7 @@ async function fetchYoutubeVideoPreview(videoId: string, apiKey: string): Promis
       const apiPreview = await fetchYoutubeVideoWithApi(videoId, apiKey);
       if (apiPreview) return apiPreview;
     } catch (error) {
-      console.warn("YouTube video API lookup failed; falling back to yt-dlp:", redactError(error));
+      mediaLog("youtube.video_api_fallback_to_ytdlp", { error: redactError(error) }, "warn");
     }
   }
 
@@ -2908,10 +2980,10 @@ async function fetchYoutubeChannelEntryPoolsWithYtDlp(channelUrl: string) {
   }
 
   if (latestResult.status === "rejected") {
-    console.warn("YouTube latest channel scan failed; using popular scan:", redactError(latestResult.reason));
+    mediaLog("youtube.channel_latest_scan_failed", { error: redactError(latestResult.reason) }, "warn");
   }
   if (popularResult.status === "rejected") {
-    console.warn("YouTube popular channel scan failed; using latest scan:", redactError(popularResult.reason));
+    mediaLog("youtube.channel_popular_scan_failed", { error: redactError(popularResult.reason) }, "warn");
   }
 
   return { latestEntries, popularEntries };
@@ -3187,7 +3259,7 @@ async function fetchYoutubeChannelWithoutApi(parsed: Extract<ParsedYoutubeInput,
   try {
     return await fetchYoutubeChannelWithYtDlp(resolvedParsed.url);
   } catch (error) {
-    console.warn("YouTube yt-dlp channel lookup failed; falling back to RSS:", redactError(error));
+    mediaLog("youtube.channel_ytdlp_fallback_to_rss", { error: redactError(error) }, "warn");
     return fetchYoutubeChannelWithRss(resolvedParsed);
   }
 }
@@ -3350,7 +3422,7 @@ async function searchYoutubeChannels(input: any, apiKey: string, limit = 8): Pro
         }, scoreTextAgainstQuery(title, query) + Math.max(0, 20 - index * 2));
       }
     } catch (error) {
-      console.warn("YouTube channel suggestion API lookup failed; falling back to yt-dlp:", redactError(error));
+      mediaLog("youtube.channel_suggestion_api_fallback_to_ytdlp", { error: redactError(error) }, "warn");
     }
   }
 
@@ -3371,7 +3443,7 @@ async function searchYoutubeChannels(input: any, apiKey: string, limit = 8): Pro
       }
     } catch (error) {
       if (!candidates.size) throw error;
-      console.warn("YouTube yt-dlp channel suggestions failed:", redactError(error));
+      mediaLog("youtube.channel_suggestions_ytdlp_failed", { error: redactError(error) }, "warn");
     }
   }
 
@@ -3506,7 +3578,7 @@ async function loadYoutubeResolvePayload(parsed: ParsedYoutubeInput, apiKey: str
       videos: videos.slice(0, YOUTUBE_CHANNEL_PREVIEW_LIMIT),
     };
   } catch (error) {
-    console.warn("YouTube channel API lookup failed; falling back to no-key lookup:", redactError(error));
+    mediaLog("youtube.channel_api_fallback_to_no_key", { error: redactError(error) }, "warn");
     const fallback = await fetchYoutubeChannelWithoutApi(parsed);
     return {
       kind: "channel",
@@ -3559,7 +3631,7 @@ async function resolveYoutubeWithCache(
 
     if (existing.staleUntil > now) {
       refreshYoutubeResolveCache(key, parsed, apiKey).catch((error) => {
-        console.warn("YouTube resolve cache refresh failed:", redactError(error));
+        mediaLog("youtube.resolve_cache_refresh_failed", { error: redactError(error) }, "warn");
       });
       return {
         payload: existing.payload,
@@ -3626,6 +3698,228 @@ function normalizeOrigin(value: any) {
   }
 }
 
+function getBearerToken(value: any) {
+  const header = Array.isArray(value) ? value[0] : String(value || "");
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || "";
+}
+
+function getFirebaseAdminAuthClient() {
+  if (!getFirebaseAdminApps().length) {
+    initializeFirebaseAdminApp();
+  }
+  return getFirebaseAdminAuth();
+}
+
+function getFirebaseAdminDb() {
+  if (!getFirebaseAdminApps().length) {
+    initializeFirebaseAdminApp();
+  }
+  return getFirebaseAdminFirestore();
+}
+
+async function verifyFirebaseIdToken(token: any): Promise<DecodedIdToken | null> {
+  const cleaned = String(token || "").trim();
+  if (!cleaned) {
+    if (FIREBASE_AUTH_REQUIRED) {
+      throw new PublicError("Sign in with Google before using this media service.", 401);
+    }
+    return null;
+  }
+
+  try {
+    return await getFirebaseAdminAuthClient().verifyIdToken(cleaned);
+  } catch {
+    throw new PublicError("Your sign-in session could not be verified.", 401);
+  }
+}
+
+async function getFirebaseUserFromHttp(req: express.Request) {
+  return verifyFirebaseIdToken(getBearerToken(req.headers.authorization));
+}
+
+async function reserveElevenLabsSeconds(uid: string, rawSeconds: number, sessionId: string) {
+  if (!uid) return 0;
+
+  const reservationSeconds = Math.max(
+    ELEVENLABS_MIN_RESERVATION_SECONDS,
+    Math.ceil(Number(rawSeconds) || 0),
+  );
+  const db = getFirebaseAdminDb();
+  const entitlementRef = db.collection("entitlements").doc(uid);
+  const usageRef = db.collection("usage").doc(uid).collection("scribeSessions").doc(sessionId);
+
+  await db.runTransaction(async (transaction) => {
+    const entitlementSnapshot = await transaction.get(entitlementRef);
+    const entitlement = entitlementSnapshot.data() || {};
+    const paidSeconds = Math.max(0, Number(entitlement.elevenLabsPaidSeconds) || 0);
+    const usedSeconds = Math.max(0, Number(entitlement.elevenLabsUsedSeconds) || 0);
+    const reservedSeconds = Math.max(0, Number(entitlement.elevenLabsReservedSeconds) || 0);
+    const remainingSeconds = paidSeconds - usedSeconds - reservedSeconds;
+
+    if (remainingSeconds < reservationSeconds) {
+      mediaLog("scribe.entitlement_insufficient", {
+        uidHash: hashLogId(uid),
+        sessionId,
+        requestedSeconds: reservationSeconds,
+        remainingSeconds,
+      }, "warn");
+      throw new PublicError("Buy ElevenLabs Scribe time before transcribing this audio.", 402, {
+        code: "elevenlabs_entitlement_required",
+      });
+    }
+
+    transaction.set(entitlementRef, {
+      elevenLabsReservedSeconds: FieldValue.increment(reservationSeconds),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    transaction.set(usageRef, {
+      status: "reserved",
+      reservedSeconds: reservationSeconds,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+  });
+
+  mediaLog("scribe.seconds_reserved", {
+    uidHash: hashLogId(uid),
+    sessionId,
+    requestedSeconds: Math.ceil(Number(rawSeconds) || 0),
+    reservedSeconds: reservationSeconds,
+  });
+  return reservationSeconds;
+}
+
+async function settleElevenLabsSeconds(uid: string, sessionId: string, reservedSeconds: number, rawUsedSeconds: number) {
+  if (!uid || reservedSeconds <= 0) return 0;
+
+  const usedSeconds = Math.max(1, Math.ceil(Number(rawUsedSeconds) || 0));
+  const db = getFirebaseAdminDb();
+  const entitlementRef = db.collection("entitlements").doc(uid);
+  const usageRef = db.collection("usage").doc(uid).collection("scribeSessions").doc(sessionId);
+
+  await db.runTransaction(async (transaction) => {
+    const entitlementSnapshot = await transaction.get(entitlementRef);
+    const entitlement = entitlementSnapshot.data() || {};
+    const paidSeconds = Math.max(0, Number(entitlement.elevenLabsPaidSeconds) || 0);
+    const currentUsedSeconds = Math.max(0, Number(entitlement.elevenLabsUsedSeconds) || 0);
+    const currentReservedSeconds = Math.max(0, Number(entitlement.elevenLabsReservedSeconds) || 0);
+    const unreservedRemainingSeconds = paidSeconds - currentUsedSeconds - currentReservedSeconds;
+    const extraSeconds = Math.max(0, usedSeconds - reservedSeconds);
+
+    if (extraSeconds > unreservedRemainingSeconds) {
+      throw new PublicError("Buy more ElevenLabs Scribe time before saving this transcription.", 402, {
+        code: "elevenlabs_entitlement_required",
+      });
+    }
+
+    transaction.set(entitlementRef, {
+      elevenLabsReservedSeconds: FieldValue.increment(-reservedSeconds),
+      elevenLabsUsedSeconds: FieldValue.increment(usedSeconds),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    transaction.set(usageRef, {
+      status: "settled",
+      reservedSeconds,
+      usedSeconds,
+      settledAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+  });
+
+  mediaLog("scribe.seconds_settled", {
+    uidHash: hashLogId(uid),
+    sessionId,
+    reservedSeconds,
+    usedSeconds,
+  });
+  return usedSeconds;
+}
+
+async function releaseElevenLabsReservation(uid: string, sessionId: string, reservedSeconds: number, status = "released") {
+  if (!uid || reservedSeconds <= 0) return;
+
+  const db = getFirebaseAdminDb();
+  const entitlementRef = db.collection("entitlements").doc(uid);
+  const usageRef = db.collection("usage").doc(uid).collection("scribeSessions").doc(sessionId);
+
+  await db.runTransaction(async (transaction) => {
+    transaction.set(entitlementRef, {
+      elevenLabsReservedSeconds: FieldValue.increment(-reservedSeconds),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    transaction.set(usageRef, {
+      status,
+      releasedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+  });
+
+  mediaLog("scribe.seconds_released", {
+    uidHash: hashLogId(uid),
+    sessionId,
+    reservedSeconds,
+    status,
+  });
+}
+
+function getMediaRequestId(req: express.Request) {
+  const existing = String((req as any).mediaRequestId || "");
+  if (existing) return existing;
+  const requestId = crypto.randomUUID().slice(0, 12);
+  (req as any).mediaRequestId = requestId;
+  return requestId;
+}
+
+function getMediaRequestContext(req: express.Request) {
+  return {
+    requestId: getMediaRequestId(req),
+    method: req.method,
+    route: req.path,
+    uidHash: hashLogId((req as any).firebaseUser?.uid),
+  };
+}
+
+function bindMediaRequestLog(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const requestId = getMediaRequestId(req);
+  const startedAt = Date.now();
+
+  res.on("finish", () => {
+    const status = res.statusCode;
+    const level: MediaLogLevel = status >= 500 ? "error" : status >= 400 ? "warn" : "info";
+    mediaLog("media.http_request", {
+      requestId,
+      method: req.method,
+      route: req.path,
+      status,
+      durationMs: Date.now() - startedAt,
+      uidHash: hashLogId((req as any).firebaseUser?.uid),
+    }, level);
+  });
+
+  next();
+}
+
+function sendMediaPublicError(
+  req: express.Request,
+  res: express.Response,
+  error: any,
+  fallback: string,
+  event: string,
+  details: Record<string, any> = {},
+) {
+  const publicError = error instanceof PublicError ? error : new PublicError(redactError(error), 502);
+  mediaLog(event, {
+    ...getMediaRequestContext(req),
+    ...details,
+    status: publicError.status,
+    code: publicError.code || "",
+    error: publicError.message || fallback,
+  }, publicError.status >= 500 ? "error" : "warn");
+  if (publicError.retryAfterSeconds) res.setHeader("Retry-After", String(publicError.retryAfterSeconds));
+  res.status(publicError.status).json({ error: publicError.message || fallback });
+}
+
 function applyApiCors(req: express.Request, res: express.Response) {
   const allowedOrigin = normalizeOrigin(process.env.APP_URL);
   const requestOrigin = normalizeOrigin(req.headers.origin);
@@ -3651,7 +3945,7 @@ function applyApiCors(req: express.Request, res: express.Response) {
 
   res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
   res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Client-Id");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Client-Id, Authorization");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
 }
 
@@ -4034,7 +4328,7 @@ async function* pcmChunksFromAudioFile(filePath: string, options: {
 
   const exitCode = await closePromise;
   if (exitCode !== 0 && !terminatedEarly) {
-    console.error("ffmpeg decode failed:", redactError(stderr));
+    mediaLog("ffmpeg.decode_failed", { error: redactError(stderr) }, "error");
     throw new PublicError("Could not decode this audio file. Try MP3, WAV, M4A, FLAC, OGG, or WEBM.", 400);
   }
 }
@@ -4636,6 +4930,9 @@ function getLiveFinishRejection(mark: number, commitMarks: number[], streamStart
 
 type LiveScribeSessionState = {
   requestId: string;
+  firebaseUid: string;
+  reservedElevenLabsSeconds: number;
+  settledElevenLabsSeconds: number;
   started: boolean;
   canceled: boolean;
   tmpPath: string;
@@ -4650,9 +4947,9 @@ async function runLiveScribeSession(client: WebSocket, session: LiveScribeSessio
   let lastProgressSentAt = 0;
 
   try {
-    const apiKey = String(body.apiKey || process.env.ELEVENLABS_API_KEY || "").trim();
+    const apiKey = String(process.env.ELEVENLABS_API_KEY || "").trim();
     if (!apiKey) {
-      throw new PublicError("Enter an ElevenLabs API key, or set ELEVENLABS_API_KEY on the server.", 400);
+      throw new PublicError("Set ELEVENLABS_API_KEY on the media service before using Scribe.", 400);
     }
 
     const audioBase64 = cleanBase64Audio(body.audioBase64);
@@ -4666,7 +4963,7 @@ async function runLiveScribeSession(client: WebSocket, session: LiveScribeSessio
     scribeLog(session.requestId, "live request accepted", {
       fileName: body.fileName || "audio",
       audioMb: Number((audioBytes / (1024 * 1024)).toFixed(2)),
-      keySource: body.apiKey ? "request" : "env",
+      keySource: "env",
       startDelayMs: LIVE_SCRIBE_START_DELAY_MS,
       minCommitSpacingSeconds: MIN_LIVE_COMMIT_SPACING_SECONDS,
       streamStartSeconds: session.streamStartSeconds,
@@ -4713,6 +5010,13 @@ async function runLiveScribeSession(client: WebSocket, session: LiveScribeSessio
     const streamEndSeconds = Number.isFinite(session.streamEndSeconds)
       ? session.streamEndSeconds
       : segments.reduce((max, segment) => Math.max(max, Number(segment?.end) || 0), session.streamStartSeconds);
+    const billableSeconds = Math.max(1, Math.ceil(streamEndSeconds - session.streamStartSeconds));
+    session.settledElevenLabsSeconds = await settleElevenLabsSeconds(
+      session.firebaseUid,
+      session.requestId,
+      session.reservedElevenLabsSeconds,
+      billableSeconds,
+    );
 
     sendClientJson(client, {
       type: "result",
@@ -4722,15 +5026,42 @@ async function runLiveScribeSession(client: WebSocket, session: LiveScribeSessio
       manualCommitMarks: session.commitMarks,
       streamStartSeconds: session.streamStartSeconds,
       streamEndSeconds,
+      billing: session.settledElevenLabsSeconds > 0
+        ? {
+          provider: "elevenlabs",
+          usedSeconds: session.settledElevenLabsSeconds,
+          reservedSeconds: session.reservedElevenLabsSeconds,
+        }
+        : undefined,
       segments,
     });
   } catch (error: any) {
     if (!session.canceled) {
       const message = error instanceof PublicError ? error.message : redactError(error);
-      console.error("Live Scribe route error:", message);
+      mediaLog("scribe.session_error", {
+        requestId: session.requestId,
+        uidHash: hashLogId(session.firebaseUid),
+        status: error instanceof PublicError ? error.status : 500,
+        error: message,
+      }, error instanceof PublicError && error.status < 500 ? "warn" : "error");
       sendClientErrorAndClose(client, message || "Scribe transcription failed", error instanceof PublicError ? error.status : 500);
     }
   } finally {
+    if (session.reservedElevenLabsSeconds > 0 && session.settledElevenLabsSeconds <= 0) {
+      await releaseElevenLabsReservation(
+        session.firebaseUid,
+        session.requestId,
+        session.reservedElevenLabsSeconds,
+        session.canceled ? "canceled" : "failed",
+      ).catch((error) => {
+        mediaLog("scribe.reservation_release_failed", {
+          requestId: session.requestId,
+          uidHash: hashLogId(session.firebaseUid),
+          reservedSeconds: session.reservedElevenLabsSeconds,
+          error: redactError(error),
+        }, "error");
+      });
+    }
     session.canceled = true;
     if (session.tmpPath) {
       fs.promises.unlink(session.tmpPath).catch(() => {});
@@ -4752,6 +5083,28 @@ async function startServer() {
     next();
   });
 
+  app.use("/api", bindMediaRequestLog);
+
+  app.use("/api", async (req, res, next) => {
+    if (!FIREBASE_AUTH_REQUIRED || req.path === "/health") {
+      next();
+      return;
+    }
+
+    try {
+      (req as any).firebaseUser = await getFirebaseUserFromHttp(req);
+      next();
+    } catch (error: any) {
+      const publicError = error instanceof PublicError ? error : new PublicError("Your sign-in session could not be verified.", 401);
+      mediaLog("media.auth_failed", {
+        ...getMediaRequestContext(req),
+        status: publicError.status,
+        error: publicError.message,
+      }, "warn");
+      res.status(publicError.status).json({ error: publicError.message });
+    }
+  });
+
   app.use(express.json({ limit: "150mb" }));
 
   app.get("/api/health", (_req, res) => {
@@ -4769,10 +5122,7 @@ async function startServer() {
       res.setHeader("Cache-Control", `private, max-age=${Math.floor(YOUTUBE_CHANNEL_SUGGESTION_CACHE_FRESH_MS / 1000)}`);
       res.json({ suggestions });
     } catch (error: any) {
-      const publicError = error instanceof PublicError ? error : new PublicError(redactError(error), 502);
-      console.error("YouTube channel suggestion route error:", publicError.message);
-      if (publicError.retryAfterSeconds) res.setHeader("Retry-After", String(publicError.retryAfterSeconds));
-      res.status(publicError.status).json({ error: publicError.message || "YouTube channel suggestions failed" });
+      sendMediaPublicError(req, res, error, "YouTube channel suggestions failed", "youtube.channel_suggestions_error");
     }
   });
 
@@ -4794,10 +5144,7 @@ async function startServer() {
         cache: resolved.cache,
       });
     } catch (error: any) {
-      const publicError = error instanceof PublicError ? error : new PublicError(redactError(error), 502);
-      console.error("YouTube resolve route error:", publicError.message);
-      if (publicError.retryAfterSeconds) res.setHeader("Retry-After", String(publicError.retryAfterSeconds));
-      res.status(publicError.status).json({ error: publicError.message || "YouTube lookup failed" });
+      sendMediaPublicError(req, res, error, "YouTube lookup failed", "youtube.resolve_error");
     }
   });
 
@@ -4820,10 +5167,7 @@ async function startServer() {
       res.setHeader("X-YouTube-Captions-Automatic-Opt-In", payload.automaticCaptionsAllowed ? "true" : "false");
       res.json(payload);
     } catch (error: any) {
-      const publicError = error instanceof PublicError ? error : new PublicError(redactError(error), 502);
-      console.error("YouTube captions route error:", publicError.message);
-      if (publicError.retryAfterSeconds) res.setHeader("Retry-After", String(publicError.retryAfterSeconds));
-      res.status(publicError.status).json({ error: publicError.message || "YouTube captions failed" });
+      sendMediaPublicError(req, res, error, "YouTube captions failed", "youtube.captions_error");
     }
   });
 
@@ -4855,6 +5199,12 @@ async function startServer() {
       };
       const fail = (message: string, status = 502) => {
         const safeMessage = message || "YouTube audio download failed.";
+        mediaLog("youtube.download_stream_error", {
+          ...getMediaRequestContext(req),
+          videoId,
+          status,
+          error: safeMessage,
+        }, status >= 500 ? "error" : "warn");
         if (res.headersSent) {
           res.destroy(new Error(safeMessage));
           return;
@@ -4912,10 +5262,7 @@ async function startServer() {
       });
     } catch (error: any) {
       if (child && child.exitCode == null && !child.killed) child.kill();
-      const publicError = error instanceof PublicError ? error : new PublicError(redactError(error), 502);
-      console.error("YouTube download route error:", publicError.message);
-      if (publicError.retryAfterSeconds) res.setHeader("Retry-After", String(publicError.retryAfterSeconds));
-      res.status(publicError.status).json({ error: publicError.message || "YouTube download failed" });
+      sendMediaPublicError(req, res, error, "YouTube download failed", "youtube.download_error");
     }
   });
 
@@ -4959,11 +5306,7 @@ async function startServer() {
       });
     } catch (error: any) {
       const publicError = error instanceof PublicError ? error : makeGeminiError(error);
-      console.error("Gemini Translate route error:", publicError.message);
-      if (publicError.retryAfterSeconds) {
-        res.setHeader("Retry-After", String(publicError.retryAfterSeconds));
-      }
-      res.status(publicError.status).json({ error: publicError.message || "Gemini translation failed" });
+      sendMediaPublicError(req, res, publicError, "Gemini translation failed", "gemini.translation_error");
     }
   });
 
@@ -4986,7 +5329,11 @@ async function startServer() {
   }
 
   const httpServer = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    mediaLog("media.server_started", {
+      port: PORT,
+      backendOnly: process.env.BACKEND_ONLY === "true",
+      firebaseAuthRequired: FIREBASE_AUTH_REQUIRED,
+    });
   });
 
   const liveScribeWss = new WebSocketServer({
@@ -4998,6 +5345,9 @@ async function startServer() {
   liveScribeWss.on("connection", (client) => {
     const session: LiveScribeSessionState = {
       requestId: crypto.randomUUID().slice(0, 8),
+      firebaseUid: "",
+      reservedElevenLabsSeconds: 0,
+      settledElevenLabsSeconds: 0,
       started: false,
       canceled: false,
       tmpPath: "",
@@ -5008,7 +5358,7 @@ async function startServer() {
       stopAtRelativeSeconds: NaN,
     };
 
-    client.on("message", (data) => {
+    client.on("message", async (data) => {
       let message: any = null;
       try {
         message = parseWsMessage(data);
@@ -5077,10 +5427,29 @@ async function startServer() {
           sendClientJson(client, { type: "error", error: "Live Scribe has already started for this song." });
           return;
         }
+
+        try {
+          const firebaseUser = await verifyFirebaseIdToken(message.authToken);
+          session.firebaseUid = firebaseUser?.uid || "";
+          session.reservedElevenLabsSeconds = await reserveElevenLabsSeconds(
+            session.firebaseUid,
+            Number(message.estimatedDurationSeconds) || 0,
+            session.requestId,
+          );
+        } catch (error: any) {
+          const publicError = error instanceof PublicError ? error : new PublicError("Your sign-in session could not be verified.", 401);
+          sendClientErrorAndClose(client, publicError.message, publicError.status);
+          return;
+        }
+
         session.streamStartSeconds = Math.max(0, Number(message.startSeconds) || 0);
         session.started = true;
         runLiveScribeSession(client, session, message).catch((error) => {
-          console.error("Live Scribe unhandled error:", redactError(error));
+          mediaLog("scribe.unhandled_error", {
+            requestId: session.requestId,
+            uidHash: hashLogId(session.firebaseUid),
+            error: redactError(error),
+          }, "error");
         });
         return;
       }

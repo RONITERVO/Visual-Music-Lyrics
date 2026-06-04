@@ -1,107 +1,139 @@
-# Living Sketchbook Music
+# Visual Music Lyrics
 
-A local music visualizer for synced bilingual lyrics.
+A production-oriented React/Vite music visualizer for synced bilingual lyrics.
 
-The app pipeline is:
+The release architecture is Firebase-first:
 
 ```txt
-YouTube video -> manual YouTube captions, when available -> letter-timed source lyrics -> optional Gemini Flash Lite -> synced playback
-Audio file or captionless YouTube video -> ElevenLabs Scribe Realtime -> letter-timed source lyrics -> optional Gemini Flash Lite -> synced playback
+Firebase Hosting
+  -> static React app
+  -> /api/translate, /api/billing, /api/webhooks, /api/entitlements -> Cloud Functions
+  -> /api/youtube -> Cloud Run media service
+  -> live Scribe WebSocket -> direct Cloud Run media origin
+
+Firestore
+  -> user profile records
+  -> ElevenLabs paid/reserved/used seconds
+  -> Stripe webhook idempotency records
+  -> Scribe usage session records
 ```
 
-You can paste a YouTube video or channel URL into the same library search box. Video imports first try server-side manual YouTube caption extraction with no YouTube Data API key and no ElevenLabs call. If readable manual captions exist, the imported song is saved as already synced with word and character timing. YouTube automatic captions are used only when the `YouTube automatic captions` setting is enabled. If captions are missing, blocked, or automatic-only while that setting is off, the audio still imports and the existing ElevenLabs Scribe flow remains the fallback. Channel URLs use the YouTube Data API when configured, or the backend downloader when the key is blank.
+The core product pipeline is:
 
-## Local Setup
+```txt
+YouTube video -> manual captions when readable -> optional Gemini translation -> synced playback
+Audio file or captionless YouTube video -> ElevenLabs Scribe -> optional Gemini translation -> synced playback
+```
 
-1. Install dependencies:
+## Architecture Decision
 
-   ```bash
-   npm install
-   ```
+The idea is directionally right, but not as originally phrased:
 
-2. Copy `.env.example` to `.env` and set:
+- Firebase Hosting with same-origin rewrites is the correct default for the web app.
+- Cloud Functions are a good fit for auth-bound control-plane APIs: Gemini translation, entitlement reads, billing session creation, and Stripe webhooks.
+- Cloud Run is the right place for media/data-plane work: `yt-dlp`, caption extraction, streaming downloads, WebSocket Scribe, and `ffmpeg`.
+- Live Scribe WebSockets should connect directly to the Cloud Run media origin with `VITE_MEDIA_WS_BASE_URL`; same-origin Firebase Hosting rewrites are for HTTP APIs.
+- Google Pay is not a billing backend. Use Stripe or another PSP, then enable Google Pay through that provider. This repo uses Stripe because it supports Google Pay for web payment flows and gives reliable webhooks.
+- Do not bill every second as a separate card charge. The MVP sells prepaid ElevenLabs seconds, then meters usage per second internally. The default price is `100` cents per hour with a minimum top-up of `3600` seconds.
 
-   ```env
-   ELEVENLABS_API_KEY=
-   GEMINI_API_KEYS=
-   GEMINI_KEY_MAX_CONCURRENCY=1
-   GEMINI_KEY_REQUESTS_PER_MINUTE=12
-   GEMINI_KEY_REQUESTS_PER_DAY=0
-   GEMINI_USER_REQUESTS_PER_MINUTE=6
-   GEMINI_USER_REQUESTS_PER_DAY=120
-   YOUTUBE_API_KEY=
-   YOUTUBE_COOKIES_BASE64=
-   ```
+See [docs/production-architecture.md](docs/production-architecture.md) for the detailed release model.
 
-   Gemini uses `gemini-flash-lite-latest`. Configure `GEMINI_API_KEYS` on the server as one key or a comma/newline-separated pool from projects you own. The backend assigns users to available keys, cools down keys after quota/auth failures, and returns a clean rate-limit response when server capacity is busy.
+## Local Development
 
-   `YOUTUBE_API_KEY` is optional. Video imports and manual caption extraction can run without it. Channel/video metadata can also resolve without it through the backend downloader. If YouTube blocks anonymous downloader or caption requests on a cloud host, export a browser `cookies.txt` file in Netscape format, base64 encode it, and set `YOUTUBE_COOKIES_BASE64` on the backend.
+Install dependencies:
 
-3. Run locally:
+```bash
+npm install
+```
 
-   ```bash
-   npm run dev
-   ```
+Copy `.env.example` to `.env` and fill only the services you need locally.
 
-## Checks
+Run the local all-in-one development server:
+
+```bash
+npm run dev
+```
+
+Local dev still uses `server.ts` so the frontend, media routes, and Gemini route can be exercised without deploying. Production does not use this as a monolith.
+
+## Production Build
 
 ```bash
 npm run lint
 npm run build
 ```
 
+`npm run build` builds:
+
+- the Firebase Hosting app in `dist/`
+- the Cloud Run media server bundle in `dist/server.cjs`
+- the Cloud Functions control-plane bundle in `functions/lib/`
+
+## Firebase Setup
+
+1. Create a Firebase project.
+2. Enable Firebase Authentication with Google as a provider.
+3. Enable Firestore in production mode.
+4. Create a Firebase Web App and copy its config into the `VITE_FIREBASE_*` variables.
+5. Deploy Firestore rules and Hosting/Functions with the Firebase CLI:
+
+```bash
+firebase deploy --only firestore,functions,hosting
+```
+
+## Cloud Run Media Service
+
+Build and deploy the media service container from the repository root:
+
+```bash
+gcloud builds submit --config cloudbuild.media.yaml
+```
+
+Set the Cloud Run secrets/env vars from `.env.example`, especially `ELEVENLABS_API_KEY`, YouTube settings, and Firebase Admin service identity access.
+
+The media deployment profile is fixed in [cloudbuild.media.yaml](cloudbuild.media.yaml): `2Gi` memory, `2` CPU, concurrency `4`, max instances `20`, and a `3600` second timeout for live Scribe WebSocket sessions.
+
+Set `VITE_MEDIA_WS_BASE_URL` for the frontend build to the Cloud Run media origin, for example:
+
+```env
+VITE_MEDIA_WS_BASE_URL=https://visual-music-media-abc123-ew.a.run.app
+```
+
+The client converts `https` to `wss` for the WebSocket connection.
+
+## Stripe and Google Pay
+
+Use Stripe as the payment service provider:
+
+1. Create a Stripe account.
+2. Register the Firebase Hosting domain in Stripe payment method domains.
+3. Enable Google Pay in Stripe payment methods.
+4. Set `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` on Cloud Functions.
+5. Point the Stripe webhook endpoint at:
+
+```txt
+https://YOUR_FIREBASE_HOSTING_DOMAIN/api/webhooks/stripe
+```
+
+The webhook grants prepaid ElevenLabs seconds in Firestore after `payment_intent.succeeded`.
+
+## Operational Signals
+
+Cloud Run and Cloud Functions emit structured production events for request duration, yt-dlp job completion/failure, Scribe second reservation/settlement, Scribe session errors, Gemini translation completion, checkout creation, and Stripe webhook grants. `npm run check:release` fails if those release-critical logging hooks are removed.
+
+Create Cloud Logging dashboards and alert policies for high error rates, repeated yt-dlp failures, Scribe entitlement failures, missing webhook grants, and unusual Scribe seconds used.
+
+## Checks
+
+```bash
+npm run lint
+npm run check:release
+npm run build
+npm run test:backend
+npm run test:youtube-captions
+npm run test:translation
+```
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
-
-## GitHub Pages
-
-GitHub Pages can host the frontend bundle, but it cannot run the Node server in `server.ts`. That means lyric transcription and Gemini translation still need a deployed backend.
-
-1. Keep this repository on `main`. The included GitHub Actions workflow publishes the frontend automatically.
-2. If you only want the static shell, push to GitHub and enable Pages to use GitHub Actions as the source.
-3. If you want transcription and translation to work from Pages, deploy the existing server separately and set the repository variable `VITE_API_BASE_URL` to that backend URL.
-4. Make sure `APP_URL` on the backend matches your Pages origin, for example `https://ronitervo.github.io`, so browser requests from the site are accepted.
-
-For a local Pages-style build, run:
-
-```bash
-npm run build:pages
-```
-
-## Render Backend
-
-The repository now includes [render.yaml](render.yaml), so Render can pick up the backend service settings automatically.
-
-1. Open Render and click `New +`.
-2. Click `Web Service`.
-3. Connect this GitHub repository.
-4. Render should detect [render.yaml](render.yaml). Keep the generated service settings.
-5. The blueprint sets `APP_URL=https://ronitervo.github.io` for this Pages site. Change it if you deploy a fork, custom domain, or different frontend origin.
-6. Set `GEMINI_API_KEYS` on the backend so nontechnical users can translate without bringing their own Gemini key.
-   If you want users to supply their own ElevenLabs key, leave `ELEVENLABS_API_KEY` empty.
-   Leave `YOUTUBE_API_KEY` empty for no-key YouTube imports. Videos with manual captions can sync without user-provided ElevenLabs or YouTube keys.
-   If Render gets YouTube's bot check, set `YOUTUBE_COOKIES_BASE64` to a base64 encoded Netscape `cookies.txt` export from a YouTube-signed-in browser.
-   Keep `YOUTUBE_MAX_CONCURRENT_JOBS=1` on Render's free tier so YouTube imports do not overlap multiple `yt-dlp` processes.
-7. Click `Create Web Service`.
-8. After the deploy finishes, copy the backend URL Render gives you.
-
-## GitHub Setup Clicks
-
-To connect GitHub Pages to that backend:
-
-1. Open the repository on GitHub.
-2. Click `Settings`.
-3. In the left sidebar, click `Secrets and variables`, then `Actions`.
-4. Click the `Variables` tab.
-5. Click `New repository variable`.
-6. Set the name to `VITE_API_BASE_URL`.
-7. Paste your Render backend URL as the value.
-8. Click `Add variable`.
-9. Still in `Settings`, click `Pages` in the left sidebar.
-10. Under `Build and deployment`, set `Source` to `GitHub Actions`.
-11. Push to `main`, or open the `Actions` tab and rerun the Pages workflow.
-
-With that setup, the frontend is hosted on GitHub Pages, the backend runs on Render, and Gemini translation uses the server key pool.
-
-The frontend now warms the backend on page load and keeps sending light health checks while the tab stays open. That removes most first-upload cold starts on Render free instances, but the backend can still sleep again after the tab closes or if the browser heavily throttles background work.

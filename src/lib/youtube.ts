@@ -1,7 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 Roni Tervo
  * SPDX-License-Identifier: Apache-2.0 */
 
-import { buildApiUrl } from "./api";
+import { buildApiUrl, getAuthorizedApiRequestHeaders } from "./api";
 import { sanitizeFileBase } from "./utils";
 
 export type YoutubeInputKind = "video" | "channel";
@@ -188,22 +188,8 @@ function compactSearchText(value: any) {
   return normalizeSearchText(value).replace(/\s+/g, "");
 }
 
-function fingerprintText(value: string) {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16);
-}
-
 function clampYoutubeChannelSuggestionLimit(limit: number) {
   return Math.max(1, Math.min(12, Math.round(Number(limit) || 8)));
-}
-
-function getYoutubeChannelSuggestionCacheScope(apiKey: string) {
-  if (!apiKey) return "public";
-  return `keyed:${fingerprintText(apiKey)}`;
 }
 
 function getYoutubeChannelSuggestionCacheIdentity(input: string) {
@@ -222,12 +208,12 @@ function getYoutubeChannelSuggestionCacheIdentity(input: string) {
   return "";
 }
 
-function getYoutubeChannelSuggestionCacheKey(input: string, apiKey: string, limit: number) {
+function getYoutubeChannelSuggestionCacheKey(input: string, limit: number) {
   const identity = getYoutubeChannelSuggestionCacheIdentity(input);
   if (!identity) return "";
   return [
     "youtube-channel-suggestions-v1",
-    getYoutubeChannelSuggestionCacheScope(apiKey),
+    "server",
     `limit:${clampYoutubeChannelSuggestionLimit(limit)}`,
     encodeURIComponent(identity),
   ].join(":");
@@ -366,14 +352,14 @@ function getYoutubeCacheIdentity(value: string) {
   return "";
 }
 
-function getYoutubeResolveCacheKey(input: string, apiKey: string) {
+function getYoutubeResolveCacheKey(input: string) {
   const identity = getYoutubeCacheIdentity(input);
   if (!identity) return "";
-  return ["youtube-resolve-v3", apiKey ? "keyed" : "public", encodeURIComponent(identity)].join(":");
+  return ["youtube-resolve-v3", "server", encodeURIComponent(identity)].join(":");
 }
 
 function getYoutubeResolveCacheKeyForIdentity(identity: string, seedKey: string) {
-  const match = seedKey.match(/^(youtube-resolve-v3:(?:keyed|public):)/);
+  const match = seedKey.match(/^(youtube-resolve-v3:server:)/);
   return match ? `${match[1]}${encodeURIComponent(identity)}` : "";
 }
 
@@ -498,10 +484,9 @@ function setCachedYoutubeResolve(key: string, result: YoutubeResolveResult) {
 
 export function getCachedYoutubeResolve(
   input: string,
-  apiKey = "",
   options: { allowStale?: boolean } = {},
 ): CachedYoutubeResolve | null {
-  const key = getYoutubeResolveCacheKey(input, apiKey);
+  const key = getYoutubeResolveCacheKey(input);
   if (!key) return null;
 
   pruneYoutubeResolveCache();
@@ -533,7 +518,6 @@ export function getCachedYoutubeResolve(
 
 export function getCachedYoutubeChannelMatches(
   query: string,
-  apiKey = "",
   limit = 6,
 ): CachedYoutubeChannelSuggestion[] {
   const needle = normalizeSearchText(query);
@@ -542,7 +526,7 @@ export function getCachedYoutubeChannelMatches(
   pruneYoutubeResolveCache();
 
   const now = Date.now();
-  const scope = `youtube-resolve-v3:${apiKey ? "keyed" : "public"}:`;
+  const scope = "youtube-resolve-v3:server:";
   const matches = new Map<string, { score: number; suggestion: CachedYoutubeChannelSuggestion }>();
 
   for (const [key, entry] of youtubeResolveCache) {
@@ -593,10 +577,9 @@ export function getCachedYoutubeChannelMatches(
 
 export function getCachedYoutubeChannelSuggestions(
   input: string,
-  apiKey = "",
   limit = 8,
 ): YoutubeChannelSearchSuggestion[] | null {
-  const key = getYoutubeChannelSuggestionCacheKey(input, apiKey, limit);
+  const key = getYoutubeChannelSuggestionCacheKey(input, limit);
   if (!key) return null;
 
   pruneYoutubeChannelSuggestionCache();
@@ -620,7 +603,7 @@ function getNetworkErrorMessage(error: any, fallback: string) {
   const message = String(error?.message || error || "").trim();
   if (/failed to fetch|networkerror|load failed|network request failed/i.test(message)) {
     const origin = typeof window !== "undefined" ? window.location.origin : "this site";
-    return `${fallback}. The hosted backend could not be reached from ${origin}. Check that Render is awake and APP_URL is set to the GitHub Pages origin.`;
+    return `${fallback}. The hosted media service could not be reached from ${origin}.`;
   }
   return message || fallback;
 }
@@ -677,21 +660,20 @@ function normalizeChannelSuggestion(data: any): YoutubeChannelSearchSuggestion |
 
 export async function searchYoutubeChannelSuggestions(
   input: string,
-  apiKey = "",
   signal?: AbortSignal,
   limit = 8,
 ): Promise<YoutubeChannelSearchSuggestion[]> {
   if (normalizeSearchText(input).length < 2) return [];
 
-  const cached = getCachedYoutubeChannelSuggestions(input, apiKey, limit);
+  const cached = getCachedYoutubeChannelSuggestions(input, limit);
   if (cached) return cached;
 
   let response: Response;
   try {
     response = await fetch(buildApiUrl("/api/youtube/channel-suggestions"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input, apiKey, limit }),
+      headers: await getAuthorizedApiRequestHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ input, limit }),
       signal,
     });
   } catch (error) {
@@ -709,20 +691,19 @@ export async function searchYoutubeChannelSuggestions(
       .filter((suggestion): suggestion is YoutubeChannelSearchSuggestion => Boolean(suggestion))
     : [];
 
-  const cacheKey = getYoutubeChannelSuggestionCacheKey(input, apiKey, limit);
+  const cacheKey = getYoutubeChannelSuggestionCacheKey(input, limit);
   setCachedYoutubeChannelSuggestions(cacheKey, suggestions);
   return suggestions;
 }
 
 export async function resolveYoutubeInput(
   input: string,
-  apiKey = "",
   signal?: AbortSignal,
   options: YoutubeResolveOptions = {},
 ): Promise<YoutubeResolveResult> {
-  const cacheKey = getYoutubeResolveCacheKey(input, apiKey);
+  const cacheKey = getYoutubeResolveCacheKey(input);
   if (!options.forceRefresh && options.allowCache !== false) {
-    const cached = getCachedYoutubeResolve(input, apiKey);
+    const cached = getCachedYoutubeResolve(input);
     if (cached) return cached.result;
   }
 
@@ -730,8 +711,8 @@ export async function resolveYoutubeInput(
   try {
     response = await fetch(buildApiUrl("/api/youtube/resolve"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ input, apiKey, forceRefresh: options.forceRefresh === true }),
+      headers: await getAuthorizedApiRequestHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ input, forceRefresh: options.forceRefresh === true }),
       signal,
     });
   } catch (error) {
@@ -768,15 +749,14 @@ function extensionFromContentType(contentType: string) {
 
 export async function downloadYoutubeAudio(
   video: YoutubeVideoPreview,
-  apiKey = "",
   signal?: AbortSignal,
 ): Promise<YoutubeDownloadResult> {
   let response: Response;
   try {
     response = await fetch(buildApiUrl("/api/youtube/download"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ videoId: video.videoId, url: video.url, apiKey }),
+      headers: await getAuthorizedApiRequestHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ videoId: video.videoId, url: video.url }),
       signal,
     });
   } catch (error) {
@@ -827,7 +807,7 @@ export async function fetchYoutubeCaptionTiming(
   try {
     response = await fetch(buildApiUrl("/api/youtube/captions"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: await getAuthorizedApiRequestHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ videoId: video.videoId, url: video.url, lang, targetLanguage, allowAutomaticCaptions }),
       signal: options.signal,
     });

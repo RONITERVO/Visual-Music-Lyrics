@@ -134,7 +134,7 @@ async function assertLiveScribeNoKeyCloses() {
     ws.on("message", (data) => {
       const payload = JSON.parse(String(data));
       if (payload?.type === "error") {
-        sawError = /ElevenLabs API key/i.test(String(payload.error || ""));
+        sawError = /ELEVENLABS_API_KEY|ElevenLabs.*server|media service/i.test(String(payload.error || ""));
       }
     });
 

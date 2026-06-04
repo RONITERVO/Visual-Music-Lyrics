@@ -1,7 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 Roni Tervo
  * SPDX-License-Identifier: Apache-2.0 */
 
-import { buildApiUrl, getApiRequestHeaders } from './api';
+import { buildApiUrl, getAuthorizedApiRequestHeaders } from './api';
 
 export interface TranslationResult {
   segments: any[];
@@ -24,7 +24,7 @@ export async function translateSegments(options: {
 
   const response = await fetch(buildApiUrl("/api/translate/gemini"), {
     method: "POST",
-    headers: getApiRequestHeaders({ "Content-Type": "application/json" }),
+    headers: await getAuthorizedApiRequestHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
 

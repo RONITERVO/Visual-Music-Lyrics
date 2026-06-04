@@ -5,7 +5,7 @@
 
 interface ImportMetaEnv {
   readonly VITE_API_BASE_URL?: string;
-  readonly VITE_BASE_PATH?: string;
+  readonly VITE_MEDIA_WS_BASE_URL?: string;
 }
 
 interface ImportMeta {
