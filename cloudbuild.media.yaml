@@ -11,8 +11,13 @@ steps:
     args:
       - build
       - -t
-      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}:$COMMIT_SHA
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}:$BUILD_ID
       - .
+
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}:$BUILD_ID
 
   - name: gcr.io/google.com/cloudsdktool/cloud-sdk
     entrypoint: gcloud
@@ -21,7 +26,7 @@ steps:
       - deploy
       - ${_SERVICE}
       - --image
-      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}:$COMMIT_SHA
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}:$BUILD_ID
       - --region
       - ${_REGION}
       - --allow-unauthenticated
@@ -36,7 +41,9 @@ steps:
       - --max-instances
       - "20"
       - --set-env-vars
-      - BACKEND_ONLY=true,FIREBASE_AUTH_REQUIRED=true,YOUTUBE_MAX_CONCURRENT_JOBS=1,YOUTUBE_JOB_QUEUE_LIMIT=8
+      - BACKEND_ONLY=true,FIREBASE_AUTH_REQUIRED=true,YOUTUBE_MAX_CONCURRENT_JOBS=1,YOUTUBE_JOB_QUEUE_LIMIT=8,APP_URL=https://visual-music-lyrics.web.app
+      - --set-secrets
+      - ELEVENLABS_API_KEY=elevenlabs-api-key:latest,YOUTUBE_API_KEY=youtube-api-key:latest
 
 images:
-  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}:$COMMIT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}:$BUILD_ID
