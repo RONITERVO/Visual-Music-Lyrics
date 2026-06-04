@@ -43,7 +43,7 @@ steps:
       - --set-env-vars
       - BACKEND_ONLY=true,FIREBASE_AUTH_REQUIRED=true,YOUTUBE_MAX_CONCURRENT_JOBS=1,YOUTUBE_JOB_QUEUE_LIMIT=8,APP_URL=https://visual-music-lyrics.web.app
       - --set-secrets
-      - ELEVENLABS_API_KEY=elevenlabs-api-key:latest,YOUTUBE_API_KEY=youtube-api-key:latest
+      - ELEVENLABS_API_KEY=elevenlabs-api-key:latest,YOUTUBE_API_KEY=youtube-api-key:latest,YOUTUBE_COOKIES_BASE64=youtube-cookies-base64:latest
 
 images:
   - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_SERVICE}:$BUILD_ID
