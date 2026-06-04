@@ -1162,9 +1162,7 @@ function youtubePreviewFromApiItem(item: any): YoutubeVideoPreview | null {
   const snippet = item?.snippet || {};
   const contentDetails = item?.contentDetails || {};
   const statistics = item?.statistics || {};
-  const rawVideoId = typeof item?.id === "string"
-    ? item.id
-    : item?.id?.videoId || contentDetails.videoId || snippet?.resourceId?.videoId;
+  const rawVideoId = contentDetails.videoId || snippet?.resourceId?.videoId || item?.id?.videoId || item?.id;
   const videoId = normalizeYoutubeVideoId(rawVideoId);
   const title = String(snippet.title || "").trim();
   if (!videoId || !title || title === "Deleted video" || title === "Private video") return null;
