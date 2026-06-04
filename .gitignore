@@ -8,3 +8,4 @@ youtubeCaptions/
 *.log
 .env*
 !.env.example
+.firebase/
