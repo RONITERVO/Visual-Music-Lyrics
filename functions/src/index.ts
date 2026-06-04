@@ -742,20 +742,65 @@ async function getEntitlement(uid: string) {
 async function getOrCreateStripeCustomer(user: DecodedIdToken) {
   const userRef = db.collection("users").doc(user.uid);
   const snapshot = await userRef.get();
-  const existingCustomerId = String(snapshot.data()?.stripeCustomerId || "");
+  const snapshotData = snapshot.data() || {};
   const stripe = requireStripe();
+  const stripeMode = /^(sk|rk)_live_/.test(STRIPE_SECRET_KEY)
+    ? "live"
+    : (/^(sk|rk)_test_/.test(STRIPE_SECRET_KEY) ? "test" : "");
+  const existingCustomerIds = Array.from(new Set(
+    (
+      stripeMode === "live"
+        ? [snapshotData.stripeCustomerIdLive, snapshotData.stripeCustomerId]
+        : (stripeMode === "test"
+          ? [snapshotData.stripeCustomerIdTest, snapshotData.stripeCustomerId]
+          : [snapshotData.stripeCustomerId])
+    )
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+  ));
 
-  if (existingCustomerId) return existingCustomerId;
+  for (const existingCustomerId of existingCustomerIds) {
+    try {
+      const existingCustomer = await stripe.customers.retrieve(existingCustomerId);
+      if (!("deleted" in existingCustomer && existingCustomer.deleted)) return existingCustomer.id;
+
+      controlLog("billing.stripe_customer_invalid", {
+        uidHash: hashLogId(user.uid),
+        customerId: existingCustomerId,
+        stripeMode: stripeMode || "unknown",
+        reason: "deleted",
+      }, "warn");
+    } catch (error: any) {
+      const message = redactError(error);
+      const missingCustomer = error?.statusCode === 404 || /No such customer/i.test(message);
+      if (!missingCustomer) throw error;
+
+      controlLog("billing.stripe_customer_invalid", {
+        uidHash: hashLogId(user.uid),
+        customerId: existingCustomerId,
+        stripeMode: stripeMode || "unknown",
+        reason: "missing",
+      }, "warn");
+    }
+  }
 
   const customer = await stripe.customers.create({
     email: user.email || undefined,
     name: user.name || undefined,
     metadata: { firebaseUid: user.uid },
   });
-  await userRef.set({ stripeCustomerId: customer.id, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  await userRef.set({
+    ...(stripeMode === "live"
+      ? { stripeCustomerIdLive: customer.id, stripeCustomerId: customer.id }
+      : (stripeMode === "test"
+        ? { stripeCustomerIdTest: customer.id, stripeCustomerId: customer.id }
+        : { stripeCustomerId: customer.id })),
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
   controlLog("billing.stripe_customer_created", {
     uidHash: hashLogId(user.uid),
     customerId: customer.id,
+    stripeMode: stripeMode || "unknown",
   });
   return customer.id;
 }
