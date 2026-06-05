@@ -31,8 +31,7 @@
         "source": "/api/health",
         "run": {
           "serviceId": "visual-music-media",
-          "region": "europe-west1",
-          "pinTag": true
+          "region": "europe-west1"
         }
       },
       {
@@ -74,8 +73,14 @@
         "source": "/api/youtube/**",
         "run": {
           "serviceId": "visual-music-media",
-          "region": "europe-west1",
-          "pinTag": true
+          "region": "europe-west1"
+        }
+      },
+      {
+        "source": "/api/elevenlabs/**",
+        "run": {
+          "serviceId": "visual-music-media",
+          "region": "europe-west1"
         }
       },
       {

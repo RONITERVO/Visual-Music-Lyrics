@@ -24,6 +24,9 @@ function assertNotContains(relativePath: string, patterns: RegExp[]) {
 }
 
 const server = read("server.ts");
+const firebaseConfig = JSON.parse(read("firebase.json"));
+const hostingRewrites = Array.isArray(firebaseConfig?.hosting?.rewrites) ? firebaseConfig.hosting.rewrites : [];
+
 assertReady(server.includes('app.post("/api/elevenlabs/scribe"'), "Missing batch Scribe HTTP route.");
 assertReady(server.includes('const ELEVENLABS_SCRIBE_MODEL = "scribe_v2"'), "Scribe must use batch scribe_v2.");
 assertReady(server.includes('form.append("tag_audio_events", "true")'), "Scribe audio-event tagging must stay enabled.");
@@ -31,6 +34,20 @@ assertReady(server.includes('form.append("timestamps_granularity", "character")'
 assertReady(server.includes("resolveLrclibKeytermsForScribe"), "LRCLIB keyterm lookup must stay in the Scribe path.");
 assertReady(server.includes("reserveElevenLabsSeconds"), "Scribe reservation accounting is missing.");
 assertReady(server.includes("settleElevenLabsSeconds"), "Scribe settlement accounting is missing.");
+assertReady(
+  hostingRewrites.some((rewrite: any) =>
+    rewrite?.source === "/api/elevenlabs/**" &&
+    rewrite?.run?.serviceId === "visual-music-media"
+  ),
+  "Firebase Hosting must rewrite /api/elevenlabs/** to the Cloud Run media service.",
+);
+assertReady(
+  !hostingRewrites.some((rewrite: any) =>
+    rewrite?.run?.serviceId === "visual-music-media" &&
+    Object.prototype.hasOwnProperty.call(rewrite.run, "pinTag")
+  ),
+  "Firebase Hosting Cloud Run API rewrites should not use pinTag; deploys fail once Hosting tags accumulate.",
+);
 
 const removedRealtimePatterns = [
   /scribe_v2_realtime/,
