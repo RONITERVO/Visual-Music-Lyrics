@@ -7,8 +7,6 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
 import os from "os";
-import WebSocket, { WebSocketServer } from "ws";
-import ffmpegPath from "ffmpeg-static";
 import crypto from "crypto";
 import { spawn } from "child_process";
 import youtubeDl from "youtube-dl-exec";
@@ -22,18 +20,18 @@ import {
   parseYoutubeAutomaticCaptionsOptIn,
 } from "./src/lib/youtubeCaptionPolicy";
 
-const SAMPLE_RATE = 16000;
-const BYTES_PER_SAMPLE = 2;
-const CHANNELS = 1;
-const BYTES_PER_SECOND = SAMPLE_RATE * BYTES_PER_SAMPLE * CHANNELS;
+const SCRIBE_SOURCE = "elevenlabs-scribe-v2";
+const ELEVENLABS_SCRIBE_MODEL = "scribe_v2";
+const ELEVENLABS_SCRIBE_ENDPOINT = "https://api.elevenlabs.io/v1/speech-to-text";
+const LRCLIB_API_BASE = "https://lrclib.net/api";
+const LRCLIB_USER_AGENT = "LivingSketchbookMusic/0.1.0 (https://github.com/RONITERVO/Audio-visualizer-ai-studio-edition)";
+const MAX_SCRIBE_KEYTERMS = 1000;
+const MAX_LRCLIB_SEARCH_CANDIDATES = 10;
+const MAX_LRCLIB_SEARCH_URLS = 4;
+const MAX_LRCLIB_CONCURRENT_SEARCHES = 2;
+const MAX_LRCLIB_RESULTS_PER_CANDIDATE = 20;
+const LRCLIB_SEARCH_TIMEOUT_MS = parseEnvInteger("LRCLIB_SEARCH_TIMEOUT_MS", 9000, 1000, 15_000);
 
-const CHUNK_MS = 250;
-const FINAL_TAIL_SILENCE_MS = 500;
-const FINAL_MESSAGE_MIN_WAIT_MS = 1500;
-const FINAL_MESSAGE_NO_EVENT_WAIT_MS = 4500;
-const FINAL_MESSAGE_QUIET_MS = 1000;
-const FINAL_MESSAGE_TIMEOUT_MS = 10_000;
-const WS_OPEN_TIMEOUT_MS = 15_000;
 const MAX_AUDIO_BYTES = 100 * 1024 * 1024;
 const GEMINI_TRANSLATE_MODEL = "gemini-flash-lite-latest";
 const GEMINI_TRANSLATE_BATCH_CHAR_LIMIT = 48_000;
@@ -55,10 +53,6 @@ const MAX_SEGMENT_CHARS = 58;
 const TARGET_SEGMENT_SECONDS = 4.2;
 const MAX_SEGMENT_SECONDS = 6;
 const MIN_SEGMENT_WORDS = 2;
-const MAX_MANUAL_COMMIT_MARKS = 80;
-const MIN_LIVE_COMMIT_SPACING_SECONDS = 15;
-const LIVE_SCRIBE_START_DELAY_MS = 3000;
-const LIVE_WS_MAX_PAYLOAD_BYTES = 160 * 1024 * 1024;
 const YOUTUBE_AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best";
 const YOUTUBE_INFO_TIMEOUT_MS = 60_000;
 const YOUTUBE_CHANNEL_FALLBACK_TIMEOUT_MS = 120_000;
@@ -627,6 +621,371 @@ function decodeXmlText(value: string) {
 function normalizeLanguageCode(value: any) {
   const cleaned = String(value || "").trim();
   return cleaned && cleaned.toLowerCase() !== "auto" ? cleaned : "";
+}
+
+interface ParsedSongLookupCandidate {
+  artistName: string;
+  trackName: string;
+  query: string;
+  source: string;
+  confidence: number;
+}
+
+interface LrclibRecord {
+  id?: number;
+  trackName?: string;
+  artistName?: string;
+  albumName?: string;
+  duration?: number;
+  instrumental?: boolean;
+  plainLyrics?: string;
+  syncedLyrics?: string;
+}
+
+function getTextInput(value: any) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function stripAudioFileExtension(value: string) {
+  return value.replace(/\.(?:mp3|m4a|mp4|wav|wave|flac|ogg|opus|webm|aac|aiff?)$/i, "").trim();
+}
+
+function stripLeadingTrackNumber(value: string) {
+  return value.replace(/^\s*(?:disc\s*)?\d{1,3}\s*[.)_-]\s+/i, "").replace(/^\s*\d{1,3}\.\s+/, "").trim();
+}
+
+function stripYoutubeIdBrackets(value: string) {
+  return value.replace(/\s*[\[(]\s*[A-Za-z0-9_-]{11}\s*[\])]\s*/g, " ").trim();
+}
+
+function isNoisyMediaTag(value: string) {
+  const text = normalizeSearchText(value);
+  if (!text) return true;
+  return /^(?:official|music|video|audio|lyrics?|lyric|visualizer|hd|hq|4k|8k|explicit|clean|radio edit|full song|full audio|official audio|official video|music video|official music video|remaster(?:ed)?(?: \d{2,4})?|stereo|mono)$/.test(text) ||
+    /\bofficial\b|\b(?:music )?video\b|\baudio\b|\blyrics?\b|\bvisualizer\b|\bexplicit\b|\bremaster(?:ed)?\b|\b\d+k\b/.test(text);
+}
+
+function stripKnownMediaTags(value: string) {
+  let text = value;
+  text = stripYoutubeIdBrackets(text);
+  text = text.replace(/\(([^)]{0,100})\)/g, (match, inner) => isNoisyMediaTag(inner) ? " " : match);
+  text = text.replace(/\[([^\]]{0,100})\]/g, (match, inner) => isNoisyMediaTag(inner) ? " " : match);
+  text = text.replace(/\{([^}]{0,100})\}/g, (match, inner) => isNoisyMediaTag(inner) ? " " : match);
+  text = text.replace(/\b(?:official\s+)?(?:music\s+)?video\b/gi, " ");
+  text = text.replace(/\b(?:official\s+)?audio\b/gi, " ");
+  text = text.replace(/\blyric(?:s|al)?\s+video\b/gi, " ");
+  text = text.replace(/\bvisuali[sz]er\b/gi, " ");
+  text = text.replace(/\b(?:hd|hq|4k|8k|explicit|clean)\b/gi, " ");
+  text = text.replace(/\bremaster(?:ed)?\s*(?:19|20)?\d{2}\b/gi, " ");
+  return text.replace(/\s+/g, " ").replace(/\s+([|:;,.!?])/g, "$1").trim();
+}
+
+function cleanSongLookupPart(value: string) {
+  return stripKnownMediaTags(stripLeadingTrackNumber(stripAudioFileExtension(value)))
+    .replace(/^[\s"'\-–—|:]+|[\s"'\-–—|:]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function createSongLookupCandidate(
+  artistName: string,
+  trackName: string,
+  source: string,
+  confidence: number,
+): ParsedSongLookupCandidate | null {
+  const artist = cleanSongLookupPart(artistName);
+  const track = cleanSongLookupPart(trackName);
+  const query = [artist, track].filter(Boolean).join(" ").trim() || track || artist;
+  if (!query || (!track && !artist)) return null;
+  return { artistName: artist, trackName: track || query, query, source, confidence };
+}
+
+function addSongLookupCandidate(
+  candidates: ParsedSongLookupCandidate[],
+  seen: Set<string>,
+  candidate: ParsedSongLookupCandidate | null,
+) {
+  if (!candidate) return;
+  const key = [
+    normalizeSearchText(candidate.artistName),
+    normalizeSearchText(candidate.trackName),
+    normalizeSearchText(candidate.query),
+  ].join("|");
+  if (!key.replace(/\|/g, "")) return;
+  if (seen.has(key)) return;
+  seen.add(key);
+  candidates.push(candidate);
+}
+
+function parseSongLookupCandidatesFromInput(input: any, source: string) {
+  const candidates: ParsedSongLookupCandidate[] = [];
+  const seen = new Set<string>();
+  const raw = getTextInput(input);
+  if (!raw) return candidates;
+
+  const cleaned = cleanSongLookupPart(raw);
+  const cornerMatch = /^\s*(.+?)\s*[「『]([^」』]+)[」』]/u.exec(stripKnownMediaTags(raw));
+  if (cornerMatch) {
+    addSongLookupCandidate(candidates, seen, createSongLookupCandidate(cornerMatch[1], cornerMatch[2], `${source}:corner-brackets`, 102));
+  }
+
+  const delimiterPatterns = [
+    { delimiter: " - ", label: "dash" },
+    { delimiter: " – ", label: "en-dash" },
+    { delimiter: " — ", label: "em-dash" },
+    { delimiter: " | ", label: "pipe" },
+    { delimiter: "|", label: "pipe" },
+  ];
+
+  for (const pattern of delimiterPatterns) {
+    const index = cleaned.indexOf(pattern.delimiter);
+    if (index <= 0) continue;
+
+    const left = cleaned.slice(0, index);
+    const right = cleaned.slice(index + pattern.delimiter.length);
+    addSongLookupCandidate(candidates, seen, createSongLookupCandidate(left, right, `${source}:${pattern.label}`, 96));
+    addSongLookupCandidate(candidates, seen, createSongLookupCandidate(right, left, `${source}:${pattern.label}:reversed`, 76));
+    break;
+  }
+
+  addSongLookupCandidate(candidates, seen, createSongLookupCandidate("", cleaned, `${source}:query`, 58));
+  return candidates;
+}
+
+function getScribeLookupCandidates(body: any) {
+  const rawInputs: Array<[string, any]> = [
+    ["youtube-title", body.youtubeTitle || body.mediaTitle || body.title],
+    ["song-name", body.songName || body.name],
+    ["file-name", body.fileName],
+    ["song-base", body.songBase || body.base],
+  ];
+
+  const candidates: ParsedSongLookupCandidate[] = [];
+  const seen = new Set<string>();
+  for (const [source, value] of rawInputs) {
+    for (const candidate of parseSongLookupCandidatesFromInput(value, source)) {
+      addSongLookupCandidate(candidates, seen, candidate);
+
+      const channelTitle = getTextInput(body.youtubeChannelTitle || body.channelTitle);
+      if (!candidate.artistName && channelTitle && candidate.trackName) {
+        addSongLookupCandidate(
+          candidates,
+          seen,
+          createSongLookupCandidate(channelTitle, candidate.trackName, `${source}:channel-artist`, candidate.confidence - 4),
+        );
+      }
+    }
+  }
+
+  return candidates
+    .sort((left, right) => right.confidence - left.confidence || right.query.length - left.query.length)
+    .slice(0, MAX_LRCLIB_SEARCH_CANDIDATES);
+}
+
+function getLrclibSearchUrls(candidate: ParsedSongLookupCandidate) {
+  const urls: string[] = [];
+  if (candidate.artistName && candidate.trackName) {
+    const exact = new URL(`${LRCLIB_API_BASE}/search`);
+    exact.searchParams.set("artist_name", candidate.artistName);
+    exact.searchParams.set("track_name", candidate.trackName);
+    urls.push(exact.toString());
+  }
+
+  const query = candidate.query || [candidate.artistName, candidate.trackName].filter(Boolean).join(" ");
+  if (query) {
+    const fuzzy = new URL(`${LRCLIB_API_BASE}/search`);
+    fuzzy.searchParams.set("q", query);
+    urls.push(fuzzy.toString());
+  }
+
+  return [...new Set(urls)];
+}
+
+async function fetchLrclibSearchUrl(url: string): Promise<LrclibRecord[]> {
+  const response = await fetch(url, {
+    headers: {
+      "Accept": "application/json",
+      "User-Agent": LRCLIB_USER_AGENT,
+    },
+    signal: (AbortSignal as any).timeout?.(LRCLIB_SEARCH_TIMEOUT_MS),
+  } as any);
+
+  if (response.status === 404) return [];
+  if (!response.ok) {
+    throw new PublicError(`LRCLIB search failed (${response.status}).`, response.status >= 500 ? 502 : response.status);
+  }
+
+  const data = await response.json().catch(() => null);
+  return Array.isArray(data) ? data.slice(0, MAX_LRCLIB_RESULTS_PER_CANDIDATE) : [];
+}
+
+function scoreLrclibRecord(record: LrclibRecord, candidate: ParsedSongLookupCandidate, estimatedDurationSeconds: number) {
+  const trackName = getTextInput(record.trackName);
+  const artistName = getTextInput(record.artistName);
+  const combined = [artistName, trackName].filter(Boolean).join(" ");
+  let score = 0;
+
+  if (candidate.trackName) score += scoreTextAgainstQuery(trackName, candidate.trackName) * 1.45;
+  if (candidate.artistName) score += scoreTextAgainstQuery(artistName, candidate.artistName) * 0.9;
+  score += scoreTextAgainstQuery(combined, candidate.query) * 0.45;
+  if (record.plainLyrics || record.syncedLyrics) score += 24;
+  if (record.instrumental) score -= 25;
+
+  const duration = Math.max(0, Number(record.duration) || 0);
+  if (duration > 0 && estimatedDurationSeconds > 0) {
+    const diff = Math.abs(duration - estimatedDurationSeconds);
+    if (diff <= 2) score += 34;
+    else if (diff <= 5) score += 24;
+    else if (diff <= 10) score += 12;
+    else if (diff >= 30) score -= Math.min(35, diff * 0.6);
+  }
+
+  return score;
+}
+
+function stripLrcTimestamps(value: string) {
+  return String(value || "")
+    .replace(/\[[0-9:.]+\]/g, " ")
+    .replace(/<\d{1,2}:\d{2}(?:\.\d{1,3})?>/g, " ")
+    .replace(/\[[^\]]{0,60}\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sanitizeScribeKeyterm(value: string) {
+  const cleaned = String(value || "")
+    .replace(/[<>{}\[\]\\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned || cleaned.length > 50) return "";
+  if (cleaned.split(/\s+/).length > 5) return "";
+  return cleaned;
+}
+
+function addScribeKeyterm(terms: string[], seen: Set<string>, value: string) {
+  if (terms.length >= MAX_SCRIBE_KEYTERMS) return;
+  const clean = sanitizeScribeKeyterm(value);
+  if (!clean) return;
+  const key = clean.normalize("NFKC").toLowerCase();
+  if (seen.has(key)) return;
+  seen.add(key);
+  terms.push(clean);
+}
+
+function getKeytermWordsFromLyrics(value: string) {
+  return stripLrcTimestamps(value).match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)?/gu) || [];
+}
+
+function buildScribeKeytermsFromLrclib(record: LrclibRecord, candidate: ParsedSongLookupCandidate) {
+  const terms: string[] = [];
+  const seen = new Set<string>();
+
+  for (const seed of [
+    candidate.trackName,
+    candidate.artistName,
+    record.trackName || "",
+    record.artistName || "",
+  ]) {
+    addScribeKeyterm(terms, seen, seed);
+  }
+
+  const lyricText = [record.plainLyrics || "", record.syncedLyrics || ""].filter(Boolean).join("\n");
+  for (const word of getKeytermWordsFromLyrics(lyricText)) {
+    addScribeKeyterm(terms, seen, word);
+    if (terms.length >= MAX_SCRIBE_KEYTERMS) break;
+  }
+
+  return terms;
+}
+
+function buildFallbackScribeKeyterms(candidates: ParsedSongLookupCandidate[]) {
+  const terms: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates.slice(0, 4)) {
+    for (const value of [candidate.trackName, candidate.artistName]) {
+      addScribeKeyterm(terms, seen, value);
+      for (const word of getKeytermWordsFromLyrics(value)) addScribeKeyterm(terms, seen, word);
+    }
+  }
+  return terms;
+}
+
+async function resolveLrclibKeytermsForScribe(body: any, estimatedDurationSeconds: number, requestId: string) {
+  const candidates = getScribeLookupCandidates(body);
+  const bestById = new Map<string, {
+    record: LrclibRecord;
+    candidate: ParsedSongLookupCandidate;
+    score: number;
+  }>();
+
+  const searches = candidates
+    .flatMap((candidate) => getLrclibSearchUrls(candidate).map((url) => ({ candidate, url })))
+    .slice(0, MAX_LRCLIB_SEARCH_URLS);
+
+  const settledSearches: Array<PromiseSettledResult<{
+    candidate: ParsedSongLookupCandidate;
+    url: string;
+    records: LrclibRecord[];
+  }>> = [];
+
+  for (let index = 0; index < searches.length; index += MAX_LRCLIB_CONCURRENT_SEARCHES) {
+    const chunk = searches.slice(index, index + MAX_LRCLIB_CONCURRENT_SEARCHES);
+    settledSearches.push(...await Promise.allSettled(
+      chunk.map(async (search) => ({
+        ...search,
+        records: await fetchLrclibSearchUrl(search.url),
+      })),
+    ));
+  }
+
+  for (const result of settledSearches) {
+    if (result.status === "rejected") {
+      mediaLog("scribe.lrclib_search_failed", {
+        requestId,
+        error: redactError(result.reason),
+      }, "warn");
+      continue;
+    }
+
+    const { candidate, records } = result.value;
+    for (const record of records) {
+      const id = String(record.id || `${record.artistName || ""}:${record.trackName || ""}:${record.duration || ""}`);
+      const score = scoreLrclibRecord(record, candidate, estimatedDurationSeconds);
+      const existing = bestById.get(id);
+      if (!existing || score > existing.score) {
+        bestById.set(id, { record, candidate, score });
+      }
+    }
+  }
+
+  const best = [...bestById.values()].sort((left, right) => right.score - left.score)[0];
+  if (!best || best.score < 90) {
+    const fallbackKeyterms = buildFallbackScribeKeyterms(candidates);
+    return {
+      keyterms: fallbackKeyterms,
+      metadata: {
+        status: best ? "low-confidence" : "not-found",
+        candidateCount: candidates.length,
+        bestScore: best ? Number(best.score.toFixed(1)) : 0,
+        keytermCount: fallbackKeyterms.length,
+      },
+    };
+  }
+
+  const keyterms = buildScribeKeytermsFromLrclib(best.record, best.candidate);
+  return {
+    keyterms,
+    metadata: {
+      status: "matched",
+      candidateCount: candidates.length,
+      bestScore: Number(best.score.toFixed(1)),
+      matchedBy: best.candidate.source,
+      selectedTrack: getTextInput(best.record.trackName),
+      selectedArtist: getTextInput(best.record.artistName),
+      selectedDurationSeconds: Math.max(0, Number(best.record.duration) || 0),
+      keytermCount: keyterms.length,
+    },
+  };
 }
 
 type ParsedYoutubeInput =
@@ -3947,125 +4306,6 @@ function applyApiCors(req: express.Request, res: express.Response) {
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
 }
 
-function getEventType(event: any) {
-  return String(event?.message_type || event?.type || event?.event || "");
-}
-
-function getFriendlyScribeError(event: any) {
-  const type = getEventType(event);
-  const detail = redactError(event?.message || event?.error || event?.detail || "");
-
-  if (type.includes("auth")) return "ElevenLabs authentication or quota error.";
-  if (type.includes("quota") || type.includes("resource_exhausted")) return "ElevenLabs authentication or quota error.";
-  if (type.includes("rate_limited") || type.includes("queue_overflow")) return "ElevenLabs is busy or rate limited. Try again in a moment.";
-  if (type.includes("unaccepted_terms")) return "ElevenLabs Scribe terms must be accepted in the ElevenLabs dashboard.";
-  if (type.includes("input") || type.includes("chunk_size")) return "Could not decode this audio file. Try MP3, WAV, M4A, FLAC, OGG, or WEBM.";
-  if (type.includes("insufficient_audio_activity")) return "ElevenLabs could not detect enough vocal audio in this file.";
-  if (type.includes("transcriber")) return "ElevenLabs could not transcribe this audio.";
-
-  return detail || "Scribe transcription failed.";
-}
-
-function isScribeErrorEvent(event: any) {
-  const type = getEventType(event);
-  return [
-    "auth_error",
-    "quota_exceeded",
-    "transcriber_error",
-    "input_error",
-    "error",
-    "commit_throttled",
-    "unaccepted_terms",
-    "rate_limited",
-    "queue_overflow",
-    "resource_exhausted",
-    "session_time_limit_exceeded",
-    "chunk_size_exceeded",
-    "insufficient_audio_activity",
-  ].some((errorType) => type.includes(errorType));
-}
-
-function parseWsMessage(data: WebSocket.RawData) {
-  const text = Buffer.isBuffer(data)
-    ? data.toString("utf8")
-    : Array.isArray(data)
-      ? Buffer.concat(data).toString("utf8")
-      : data instanceof ArrayBuffer
-        ? Buffer.from(data).toString("utf8")
-        : Buffer.from(data as any).toString("utf8");
-  return JSON.parse(text);
-}
-
-function sendWsJson(ws: WebSocket, payload: Record<string, any>) {
-  if (ws.readyState !== WebSocket.OPEN) {
-    throw new PublicError("Scribe connection closed before transcription finished.", 502);
-  }
-  ws.send(JSON.stringify(payload));
-}
-
-function waitForOpen(ws: WebSocket) {
-  return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      try {
-        ws.close();
-      } catch {}
-      reject(new PublicError("Could not connect to ElevenLabs Scribe. Check your network and API key.", 504));
-    }, WS_OPEN_TIMEOUT_MS);
-
-    const cleanup = () => {
-      clearTimeout(timer);
-      ws.off("open", onOpen);
-      ws.off("error", onError);
-      ws.off("close", onClose);
-    };
-    const onOpen = () => {
-      cleanup();
-      resolve();
-    };
-    const onError = (error: Error) => {
-      cleanup();
-      reject(error);
-    };
-    const onClose = () => {
-      cleanup();
-      reject(new PublicError("Scribe connection closed before it was ready.", 502));
-    };
-    ws.once("open", onOpen);
-    ws.once("error", onError);
-    ws.once("close", onClose);
-  });
-}
-
-async function waitForFinalScribeEvents(options: {
-  finalCommitSentAt: number;
-  committedAtBeforeFinal: number;
-  getLastMessageAt: () => number;
-  getLastCommittedAt: () => number;
-  getStreamError: () => Error | null;
-  shouldAbort?: () => boolean;
-}) {
-  while (Date.now() - options.finalCommitSentAt < FINAL_MESSAGE_TIMEOUT_MS) {
-    if (options.getStreamError()) return;
-    if (options.shouldAbort?.()) throw new PublicError("Scribe stream canceled.", 499);
-
-    const now = Date.now();
-    const elapsed = now - options.finalCommitSentAt;
-    const quietFor = now - options.getLastMessageAt();
-    const sawFinalCommit = options.getLastCommittedAt() > options.committedAtBeforeFinal;
-
-    if (elapsed >= FINAL_MESSAGE_MIN_WAIT_MS && sawFinalCommit && quietFor >= FINAL_MESSAGE_QUIET_MS) {
-      return;
-    }
-
-    if (elapsed >= FINAL_MESSAGE_NO_EVENT_WAIT_MS && quietFor >= FINAL_MESSAGE_QUIET_MS) {
-      return;
-    }
-
-    await sleep(150);
-  }
-}
-
 function extractScribeText(value: any): string {
   if (value == null) return "";
   if (typeof value === "string") return value;
@@ -4240,7 +4480,7 @@ function segmentFromWords(words: any[], event: any, order: number, fallbackText 
     words,
     characterTimeline: words.flatMap((word: any) => Array.isArray(word.letters) ? word.letters : []),
     order,
-    source: "elevenlabs-scribe-v2-realtime",
+    source: SCRIBE_SOURCE,
     language_code: event?.language_code || "",
   };
 }
@@ -4267,307 +4507,164 @@ function segmentsFromScribeEvent(event: any, order: number) {
     .filter(Boolean);
 }
 
-async function* pcmChunksFromAudioFile(filePath: string, options: {
-  startSeconds?: number;
-} = {}): AsyncGenerator<Buffer> {
-  if (!ffmpegPath) throw new PublicError("ffmpeg-static binary not found", 500);
+function segmentFromScribeAudioEvent(word: any, order: number, languageCode: string) {
+  const text = String(word?.text || word?.word || "").trim();
+  if (!text) return null;
 
-  const startSeconds = Math.max(0, Number(options.startSeconds) || 0);
-  const ffmpegArgs = [
-    "-hide_banner",
-    "-loglevel", "error",
-  ];
+  const start = Number.isFinite(Number(word?.start)) ? Number(word.start) : 0;
+  const end = Number.isFinite(Number(word?.end)) && Number(word.end) > start
+    ? Number(word.end)
+    : start + 0.35;
 
-  if (startSeconds > 0) {
-    ffmpegArgs.push("-ss", String(startSeconds));
-  }
-
-  ffmpegArgs.push(
-    "-i", filePath,
-    "-vn",
-    "-ac", "1",
-    "-ar", String(SAMPLE_RATE),
-    "-acodec", "pcm_s16le",
-    "-f", "s16le",
-    "pipe:1",
-  );
-
-  const ffmpeg = spawn(ffmpegPath, ffmpegArgs, { stdio: ["ignore", "pipe", "pipe"] });
-
-  let stderr = "";
-  let stdoutEnded = false;
-  let terminatedEarly = false;
-  ffmpeg.stderr.on("data", (data) => {
-    stderr += data.toString();
-  });
-
-  const closePromise = new Promise<number>((resolve) => ffmpeg.once("close", resolve));
-  const chunkBytes = Math.floor((BYTES_PER_SECOND * CHUNK_MS) / 1000);
-  let buffer = Buffer.alloc(0);
-
-  try {
-    for await (const data of ffmpeg.stdout) {
-      buffer = Buffer.concat([buffer, data as Buffer]);
-
-      while (buffer.length >= chunkBytes) {
-        yield buffer.subarray(0, chunkBytes);
-        buffer = buffer.subarray(chunkBytes);
-      }
-    }
-
-    if (buffer.length > 0) yield buffer;
-    stdoutEnded = true;
-  } finally {
-    if (!stdoutEnded && ffmpeg.exitCode == null && !ffmpeg.killed) {
-      terminatedEarly = true;
-      ffmpeg.kill("SIGKILL");
-    }
-  }
-
-  const exitCode = await closePromise;
-  if (exitCode !== 0 && !terminatedEarly) {
-    mediaLog("ffmpeg.decode_failed", { error: redactError(stderr) }, "error");
-    throw new PublicError("Could not decode this audio file. Try MP3, WAV, M4A, FLAC, OGG, or WEBM.", 400);
-  }
+  return {
+    id: `seg-${crypto.randomUUID()}`,
+    start,
+    end,
+    primary: text,
+    translation: "",
+    secondary: "",
+    raw: text,
+    speaker: "",
+    section: "",
+    role: "audio-event",
+    kind: "audio-event",
+    words: [word],
+    characterTimeline: Array.isArray(word?.letters) ? word.letters : [],
+    order,
+    source: SCRIBE_SOURCE,
+    language_code: languageCode || "",
+  };
 }
 
-function buildScribeUrl(options: {
-  sourceLanguage: string;
-  keyterms: string[];
-  commitStrategy: "manual";
-}) {
-  const url = new URL("wss://api.elevenlabs.io/v1/speech-to-text/realtime");
-  url.searchParams.set("model_id", "scribe_v2_realtime");
-  url.searchParams.set("audio_format", "pcm_16000");
-  url.searchParams.set("include_timestamps", "true");
-  url.searchParams.set("no_verbatim", "false");
-  url.searchParams.set("commit_strategy", options.commitStrategy);
+function segmentsFromScribeResponse(response: any) {
+  const languageCode = String(response?.language_code || response?.languageCode || "");
+  const lyricSegments = segmentsFromScribeEvent(response, 0);
+  const words = Array.isArray(response?.words)
+    ? response.words.map(normalizeScribeWord)
+    : [];
+  const audioEventSegments = words
+    .filter((word: any) => word.type && word.type !== "word" && Number.isFinite(word.start))
+    .map((word: any, index: number) => segmentFromScribeAudioEvent(word, lyricSegments.length + index, languageCode))
+    .filter(Boolean);
 
-  if (options.sourceLanguage) {
-    url.searchParams.set("language_code", options.sourceLanguage);
-  } else {
-    url.searchParams.set("include_language_detection", "true");
-  }
-
-  for (const term of options.keyterms.slice(0, 50)) {
-    const clean = String(term || "").trim().slice(0, 20);
-    if (clean) url.searchParams.append("keyterms", clean);
-  }
-
-  return url;
+  return [...lyricSegments, ...audioEventSegments]
+    .sort((left: any, right: any) => Number(left.start) - Number(right.start) || Number(left.order || 0) - Number(right.order || 0))
+    .map((segment: any, order: number) => ({ ...segment, order }));
 }
 
-async function streamToScribe(filePath: string, options: {
+function getFriendlyScribeHttpError(data: any, responseText: string, status: number) {
+  const detail = redactError(data?.detail || data?.message || data?.error || responseText || "");
+  const normalized = detail.toLowerCase();
+
+  if (status === 401 || status === 403 || /api key|auth|permission|forbidden|unauthorized/.test(normalized)) {
+    return "ElevenLabs authentication or quota error.";
+  }
+  if (status === 429 || /quota|rate|resource_exhausted|too many/.test(normalized)) {
+    return "ElevenLabs is busy or rate limited. Try again in a moment.";
+  }
+  if (/unaccepted_terms/.test(normalized)) return "ElevenLabs Scribe terms must be accepted in the ElevenLabs dashboard.";
+  if (/decode|audio|file|format|multipart|input/.test(normalized) && status < 500) {
+    return "Could not decode this audio file. Try MP3, WAV, M4A, FLAC, OGG, or WEBM.";
+  }
+
+  return detail || "Scribe transcription failed.";
+}
+
+async function transcribeWithScribeV2(audioBuffer: Buffer, options: {
   apiKey: string;
+  fileName: string;
+  mimeType: string;
   sourceLanguage: string;
-  previousText: string;
   keyterms: string[];
   requestId: string;
-  commitStrategy: "manual";
-  manualCommitMarks: number[];
-  startSeconds?: number;
-  getManualCommitMarks?: () => number[];
-  getStopAtRelativeSeconds?: () => number;
-  onProgress?: (progress: { chunksSent: number; audioSecondsSent: number; wsBufferedBytes: number }) => void;
-  shouldAbort?: () => boolean;
 }) {
-  const requestId = options.requestId;
-  const scribeUrl = buildScribeUrl({
-    sourceLanguage: options.sourceLanguage,
-    keyterms: options.keyterms,
-    commitStrategy: options.commitStrategy,
-  });
-  scribeLog(requestId, "opening websocket", {
-    host: scribeUrl.host,
-    model: scribeUrl.searchParams.get("model_id"),
-    sourceLanguage: options.sourceLanguage || "auto",
-    commitStrategy: options.commitStrategy,
-    manualCommitMarks: options.manualCommitMarks.length,
-    startSeconds: Number(options.startSeconds || 0),
-  });
+  const form = new FormData();
+  const safeFileName = path.basename(options.fileName || "audio").replace(/[^\p{L}\p{N} ._()\[\]-]+/gu, "_") || "audio";
+  const mimeType = options.mimeType || getAudioContentType(path.extname(safeFileName).slice(1));
 
-  const ws = new WebSocket(scribeUrl, {
-    headers: { "xi-api-key": options.apiKey },
-  });
-
-  const segments: any[] = [];
-  let order = 0;
-  let streamError: Error | null = null;
-  let lastLoggedType = "";
-  let lastMessageAt = Date.now();
-  let lastCommittedAt = 0;
-  let chunksSent = 0;
-  let audioMsSent = 0;
-  let manualCommitIndex = 0;
-
-  ws.on("message", (data) => {
-    try {
-      lastMessageAt = Date.now();
-      const event = parseWsMessage(data);
-      const type = getEventType(event);
-
-      if (type && type !== "partial_transcript" && type !== lastLoggedType) {
-        scribeLog(requestId, "received event", { type });
-        lastLoggedType = type;
-      }
-
-      if (type === "committed_transcript_with_timestamps") {
-        lastCommittedAt = Date.now();
-        const eventSegments = segmentsFromScribeEvent(event, order);
-        if (eventSegments.length) {
-          segments.push(...eventSegments);
-          order += eventSegments.length;
-          const first = eventSegments[0];
-          const last = eventSegments[eventSegments.length - 1];
-          scribeLog(requestId, "committed segment", {
-            added: eventSegments.length,
-            segments: segments.length,
-            start: Number(first.start.toFixed(2)),
-            end: Number(last.end.toFixed(2)),
-          });
-        }
-      } else if (isScribeErrorEvent(event)) {
-        streamError = new PublicError(getFriendlyScribeError(event), type.includes("auth") ? 401 : 502);
-        ws.close();
-      }
-    } catch (error: any) {
-      streamError = new PublicError(redactError(error), 502);
-      ws.close();
-    }
-  });
-
-  ws.on("error", (error) => {
-    streamError = new PublicError(redactError(error), 502);
-  });
-
-  await waitForOpen(ws);
-  scribeLog(requestId, "websocket open");
-
-  let firstChunk = true;
-  try {
-    for await (const chunk of pcmChunksFromAudioFile(filePath, { startSeconds: options.startSeconds })) {
-      if (streamError) throw streamError;
-      if (options.shouldAbort?.()) {
-        throw new PublicError("Scribe stream canceled.", 499);
-      }
-
-      const payload: Record<string, any> = {
-        message_type: "input_audio_chunk",
-        audio_base_64: chunk.toString("base64"),
-        commit: false,
-        sample_rate: SAMPLE_RATE,
-      };
-
-      if (firstChunk && options.previousText) {
-        payload.previous_text = String(options.previousText).slice(0, 50);
-      }
-
-      sendWsJson(ws, payload);
-      firstChunk = false;
-      chunksSent += 1;
-      audioMsSent += Math.round((chunk.length / BYTES_PER_SECOND) * 1000);
-
-      if (options.commitStrategy === "manual") {
-        const audioSecondsSent = audioMsSent / 1000;
-        const manualCommitMarks = options.getManualCommitMarks
-          ? options.getManualCommitMarks()
-          : options.manualCommitMarks;
-        while (
-          manualCommitIndex < manualCommitMarks.length &&
-          audioSecondsSent >= manualCommitMarks[manualCommitIndex]
-        ) {
-          sendWsJson(ws, {
-            message_type: "input_audio_chunk",
-            audio_base_64: "",
-            commit: true,
-            sample_rate: SAMPLE_RATE,
-          });
-          scribeLog(requestId, "manual gap commit sent", {
-            at: manualCommitMarks[manualCommitIndex],
-            audioSecondsSent: Number(audioSecondsSent.toFixed(1)),
-          });
-          manualCommitIndex += 1;
-        }
-      }
-
-      const stopAtRelativeSeconds = options.getStopAtRelativeSeconds?.();
-      if (Number.isFinite(stopAtRelativeSeconds) && stopAtRelativeSeconds >= 0 && audioMsSent / 1000 >= stopAtRelativeSeconds) {
-        scribeLog(requestId, "audio stream stopped at requested section end", {
-          audioSecondsSent: Number((audioMsSent / 1000).toFixed(1)),
-          stopAtRelativeSeconds: Number(stopAtRelativeSeconds.toFixed(1)),
-        });
-        break;
-      }
-
-      options.onProgress?.({
-        chunksSent,
-        audioSecondsSent: Number((audioMsSent / 1000).toFixed(3)),
-        wsBufferedBytes: ws.bufferedAmount,
-      });
-
-      if (chunksSent === 1 || chunksSent % Math.round(30_000 / CHUNK_MS) === 0) {
-        scribeLog(requestId, "audio streamed", {
-          chunksSent,
-          audioSecondsSent: Number((audioMsSent / 1000).toFixed(1)),
-          wsBufferedBytes: ws.bufferedAmount,
-        });
-      }
-      await sleep(CHUNK_MS);
-    }
-
-    scribeLog(requestId, "audio stream finished", {
-      chunksSent,
-      audioSecondsSent: Number((audioMsSent / 1000).toFixed(1)),
-      segments: segments.length,
-    });
-
-    const finalSilence = Buffer.alloc(Math.floor((BYTES_PER_SECOND * FINAL_TAIL_SILENCE_MS) / 1000));
-    sendWsJson(ws, {
-      message_type: "input_audio_chunk",
-      audio_base_64: finalSilence.toString("base64"),
-      commit: false,
-      sample_rate: SAMPLE_RATE,
-    });
-    await sleep(FINAL_TAIL_SILENCE_MS);
-
-    sendWsJson(ws, {
-      message_type: "input_audio_chunk",
-      audio_base_64: "",
-      commit: true,
-      sample_rate: SAMPLE_RATE,
-    });
-    scribeLog(requestId, "final commit sent");
-    await waitForFinalScribeEvents({
-      finalCommitSentAt: Date.now(),
-      committedAtBeforeFinal: lastCommittedAt,
-      getLastMessageAt: () => lastMessageAt,
-      getLastCommittedAt: () => lastCommittedAt,
-      getStreamError: () => streamError,
-      shouldAbort: options.shouldAbort,
-    });
-
-    if (streamError) throw streamError;
-  } finally {
-    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-      ws.close();
-    }
+  form.append("model_id", ELEVENLABS_SCRIBE_MODEL);
+  form.append("file", new Blob([audioBuffer as any], { type: mimeType }), safeFileName);
+  form.append("tag_audio_events", "true");
+  form.append("timestamps_granularity", "character");
+  form.append("diarize", "false");
+  form.append("no_verbatim", "false");
+  if (options.sourceLanguage) form.append("language_code", options.sourceLanguage);
+  for (const keyterm of options.keyterms.slice(0, MAX_SCRIBE_KEYTERMS)) {
+    form.append("keyterms", keyterm);
   }
 
-  const sortedSegments = segments
-    .sort((a, b) => a.start - b.start || a.order - b.order)
-    .map((segment, index) => ({ ...segment, order: index }));
+  scribeLog(options.requestId, "batch request started", {
+    model: ELEVENLABS_SCRIBE_MODEL,
+    sourceLanguage: options.sourceLanguage || "auto",
+    keyterms: Math.min(options.keyterms.length, MAX_SCRIBE_KEYTERMS),
+    tagAudioEvents: true,
+    timestampsGranularity: "character",
+  });
 
-  scribeLog(requestId, "finished", { segments: sortedSegments.length, commitStrategy: options.commitStrategy });
-  return sortedSegments;
+  const response = await fetch(ELEVENLABS_SCRIBE_ENDPOINT, {
+    method: "POST",
+    headers: { "xi-api-key": options.apiKey },
+    body: form as any,
+  });
+
+  const responseText = await response.text();
+  let data: any = null;
+  try {
+    data = responseText ? JSON.parse(responseText) : null;
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    throw new PublicError(
+      getFriendlyScribeHttpError(data, responseText, response.status),
+      response.status === 401 || response.status === 403 ? 401 : response.status === 429 ? 429 : response.status >= 400 && response.status < 500 ? 400 : 502,
+    );
+  }
+  if (!data) throw new PublicError("ElevenLabs returned an invalid Scribe response.", 502);
+
+  scribeLog(options.requestId, "batch request finished", {
+    languageCode: data.language_code || "",
+    words: Array.isArray(data.words) ? data.words.length : 0,
+    textChars: String(data.text || "").length,
+  });
+
+  return data;
+}
+
+function isRetryableScribeBatchError(error: any) {
+  if (!(error instanceof PublicError)) return true;
+  return error.status === 429 || error.status >= 500;
+}
+
+async function transcribeWithScribeV2WithRetry(audioBuffer: Buffer, options: {
+  apiKey: string;
+  fileName: string;
+  mimeType: string;
+  sourceLanguage: string;
+  keyterms: string[];
+  requestId: string;
+}) {
+  let lastError: any = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await transcribeWithScribeV2(audioBuffer, options);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= 3 || !isRetryableScribeBatchError(error)) throw error;
+      scribeLog(options.requestId, "batch retry scheduled", {
+        attempt,
+        status: error instanceof PublicError ? error.status : 0,
+        error: redactError(error),
+      });
+      await sleep(600 * attempt);
+    }
+  }
+  throw lastError;
 }
 
 function cleanBase64Audio(value: any) {
   return String(value || "").replace(/^data:[^,]+,/, "").trim();
-}
-
-function buildTempAudioPath(fileName: string) {
-  const ext = path.extname(fileName || "").replace(/[^a-zA-Z0-9.]/g, "") || ".audio";
-  return path.join(os.tmpdir(), `living-sketchbook-${crypto.randomUUID()}${ext}`);
 }
 
 function makeGeminiError(error: any) {
@@ -4847,226 +4944,6 @@ async function translateGeminiBatch(batch: Array<{ index: number; text: string }
   throw lastError instanceof PublicError ? lastError : makeGeminiError(lastError);
 }
 
-function sendClientJson(client: WebSocket, payload: Record<string, any>) {
-  if (client.readyState === WebSocket.OPEN) {
-    client.send(JSON.stringify(payload));
-  }
-}
-
-function closeClientSocket(client: WebSocket, code = 1000, reason = "done") {
-  if (client.readyState !== WebSocket.OPEN && client.readyState !== WebSocket.CONNECTING) return;
-  const safeReason = reason.slice(0, 120);
-  try {
-    client.close(code, safeReason);
-  } catch {}
-}
-
-function sendClientErrorAndClose(client: WebSocket, message: string, status = 500) {
-  const payload = JSON.stringify({ type: "error", error: message || "Scribe transcription failed" });
-  const closeCode = status >= 400 && status < 500 ? 1008 : 1011;
-  const closeReason = status >= 400 && status < 500 ? "request rejected" : "scribe failed";
-
-  if (client.readyState !== WebSocket.OPEN) {
-    closeClientSocket(client, closeCode, closeReason);
-    return;
-  }
-
-  client.send(payload, () => {
-    closeClientSocket(client, closeCode, closeReason);
-  });
-}
-
-function offsetTimedItem(item: any, offsetSeconds: number) {
-  if (!item || !Number.isFinite(offsetSeconds) || offsetSeconds === 0) return item;
-  const next = { ...item };
-  if (Number.isFinite(Number(next.start))) next.start = Number(next.start) + offsetSeconds;
-  if (Number.isFinite(Number(next.end))) next.end = Number(next.end) + offsetSeconds;
-  return next;
-}
-
-function offsetScribeSegments(segments: any[], offsetSeconds: number) {
-  if (!Number.isFinite(offsetSeconds) || offsetSeconds === 0) return segments;
-  return segments.map((segment) => ({
-    ...offsetTimedItem(segment, offsetSeconds),
-    words: Array.isArray(segment.words)
-      ? segment.words.map((word: any) => ({
-        ...offsetTimedItem(word, offsetSeconds),
-        letters: Array.isArray(word.letters)
-          ? word.letters.map((letter: any) => offsetTimedItem(letter, offsetSeconds))
-          : word.letters,
-      }))
-      : segment.words,
-    characterTimeline: Array.isArray(segment.characterTimeline)
-      ? segment.characterTimeline.map((item: any) => offsetTimedItem(item, offsetSeconds))
-      : segment.characterTimeline,
-  }));
-}
-
-function getLiveCommitRejection(mark: number, commitMarks: number[], streamStartSeconds: number) {
-  if (!Number.isFinite(mark) || mark <= 0) {
-    return { reason: "Invalid commit mark.", nextAllowedAt: streamStartSeconds + MIN_LIVE_COMMIT_SPACING_SECONDS };
-  }
-
-  if (commitMarks.length >= MAX_MANUAL_COMMIT_MARKS) {
-    return { reason: "Maximum commit marks reached.", nextAllowedAt: mark };
-  }
-
-  const last = commitMarks[commitMarks.length - 1] || streamStartSeconds;
-  const nextAllowedAt = last + MIN_LIVE_COMMIT_SPACING_SECONDS;
-  if (mark < nextAllowedAt) {
-    return { reason: "Commit segments must be at least 15 seconds.", nextAllowedAt };
-  }
-
-  return null;
-}
-
-function getLiveFinishRejection(mark: number, commitMarks: number[], streamStartSeconds: number) {
-  const rejection = getLiveCommitRejection(mark, commitMarks, streamStartSeconds);
-  if (!rejection || rejection.reason !== "Maximum commit marks reached.") return rejection;
-  return null;
-}
-
-type LiveScribeSessionState = {
-  requestId: string;
-  firebaseUid: string;
-  reservedElevenLabsSeconds: number;
-  settledElevenLabsSeconds: number;
-  started: boolean;
-  canceled: boolean;
-  tmpPath: string;
-  streamStartSeconds: number;
-  streamEndSeconds: number;
-  commitMarks: number[];
-  relativeCommitMarks: number[];
-  stopAtRelativeSeconds: number;
-};
-
-async function runLiveScribeSession(client: WebSocket, session: LiveScribeSessionState, body: any) {
-  let lastProgressSentAt = 0;
-
-  try {
-    const apiKey = String(process.env.ELEVENLABS_API_KEY || "").trim();
-    if (!apiKey) {
-      throw new PublicError("Set ELEVENLABS_API_KEY on the media service before using Scribe.", 400);
-    }
-
-    const audioBase64 = cleanBase64Audio(body.audioBase64);
-    if (!audioBase64) throw new PublicError("No audio file was received.", 400);
-
-    const audioBytes = Buffer.byteLength(audioBase64, "base64");
-    if (audioBytes > MAX_AUDIO_BYTES) {
-      throw new PublicError("Audio file is too large for this local transcription route.", 413);
-    }
-
-    scribeLog(session.requestId, "live request accepted", {
-      fileName: body.fileName || "audio",
-      audioMb: Number((audioBytes / (1024 * 1024)).toFixed(2)),
-      keySource: "env",
-      startDelayMs: LIVE_SCRIBE_START_DELAY_MS,
-      minCommitSpacingSeconds: MIN_LIVE_COMMIT_SPACING_SECONDS,
-      streamStartSeconds: session.streamStartSeconds,
-    });
-
-    sendClientJson(client, { type: "status", status: "preparing", message: "Preparing audio" });
-
-    const audioBuffer = Buffer.from(audioBase64, "base64");
-    session.tmpPath = buildTempAudioPath(body.fileName);
-    await fs.promises.writeFile(session.tmpPath, audioBuffer);
-
-    await sleep(LIVE_SCRIBE_START_DELAY_MS);
-    if (session.canceled) return;
-
-    sendClientJson(client, {
-      type: "status", status: "streaming", message: "Listening." });
-
-    const sourceLanguage = normalizeLanguageCode(body.sourceLanguage);
-    const keyterms = Array.isArray(body.keyterms) ? body.keyterms : [];
-    const previousText = String(body.previousText || "Song lyrics").slice(0, 50);
-    const relativeSegments = await streamToScribe(session.tmpPath, {
-      apiKey,
-      sourceLanguage,
-      previousText,
-      keyterms,
-      requestId: session.requestId,
-      commitStrategy: "manual",
-      manualCommitMarks: [],
-      startSeconds: session.streamStartSeconds,
-      getManualCommitMarks: () => session.relativeCommitMarks,
-      getStopAtRelativeSeconds: () => session.stopAtRelativeSeconds,
-      shouldAbort: () => session.canceled || client.readyState !== WebSocket.OPEN,
-      onProgress: (progress) => {
-        const now = Date.now();
-        if (now - lastProgressSentAt < 1000) return;
-        lastProgressSentAt = now;
-        sendClientJson(client, { type: "progress", ...progress });
-      },
-    });
-
-    if (session.canceled) return;
-
-    const segments = offsetScribeSegments(relativeSegments, session.streamStartSeconds);
-    const streamEndSeconds = Number.isFinite(session.streamEndSeconds)
-      ? session.streamEndSeconds
-      : segments.reduce((max, segment) => Math.max(max, Number(segment?.end) || 0), session.streamStartSeconds);
-    const billableSeconds = Math.max(1, Math.ceil(streamEndSeconds - session.streamStartSeconds));
-    session.settledElevenLabsSeconds = await settleElevenLabsSeconds(
-      session.firebaseUid,
-      session.requestId,
-      session.reservedElevenLabsSeconds,
-      billableSeconds,
-    );
-
-    sendClientJson(client, {
-      type: "result",
-      source: "elevenlabs-scribe-v2-realtime",
-      model: "scribe_v2_realtime",
-      commitStrategy: "manual",
-      manualCommitMarks: session.commitMarks,
-      streamStartSeconds: session.streamStartSeconds,
-      streamEndSeconds,
-      billing: session.settledElevenLabsSeconds > 0
-        ? {
-          provider: "elevenlabs",
-          usedSeconds: session.settledElevenLabsSeconds,
-          reservedSeconds: session.reservedElevenLabsSeconds,
-        }
-        : undefined,
-      segments,
-    });
-  } catch (error: any) {
-    if (!session.canceled) {
-      const message = error instanceof PublicError ? error.message : redactError(error);
-      mediaLog("scribe.session_error", {
-        requestId: session.requestId,
-        uidHash: hashLogId(session.firebaseUid),
-        status: error instanceof PublicError ? error.status : 500,
-        error: message,
-      }, error instanceof PublicError && error.status < 500 ? "warn" : "error");
-      sendClientErrorAndClose(client, message || "Scribe transcription failed", error instanceof PublicError ? error.status : 500);
-    }
-  } finally {
-    if (session.reservedElevenLabsSeconds > 0 && session.settledElevenLabsSeconds <= 0) {
-      await releaseElevenLabsReservation(
-        session.firebaseUid,
-        session.requestId,
-        session.reservedElevenLabsSeconds,
-        session.canceled ? "canceled" : "failed",
-      ).catch((error) => {
-        mediaLog("scribe.reservation_release_failed", {
-          requestId: session.requestId,
-          uidHash: hashLogId(session.firebaseUid),
-          reservedSeconds: session.reservedElevenLabsSeconds,
-          error: redactError(error),
-        }, "error");
-      });
-    }
-    session.canceled = true;
-    if (session.tmpPath) {
-      fs.promises.unlink(session.tmpPath).catch(() => {});
-    }
-  }
-}
-
 async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT || 3000);
@@ -5264,6 +5141,107 @@ async function startServer() {
     }
   });
 
+  app.post("/api/elevenlabs/scribe", async (req, res) => {
+    const requestId = getMediaRequestId(req);
+    const firebaseUid = String((req as any).firebaseUser?.uid || "");
+    let reservedElevenLabsSeconds = 0;
+    let settledElevenLabsSeconds = 0;
+
+    try {
+      const apiKey = String(process.env.ELEVENLABS_API_KEY || "").trim();
+      if (!apiKey) {
+        throw new PublicError("Set ELEVENLABS_API_KEY on the media service before using Scribe.", 400);
+      }
+
+      const body = req.body || {};
+      const audioBase64 = cleanBase64Audio(body.audioBase64);
+      if (!audioBase64) throw new PublicError("No audio file was received.", 400);
+
+      const audioBytes = Buffer.byteLength(audioBase64, "base64");
+      if (audioBytes > MAX_AUDIO_BYTES) {
+        throw new PublicError("Audio file is too large for this transcription route.", 413);
+      }
+
+      const estimatedDurationSeconds = Math.max(0, Number(body.estimatedDurationSeconds || body.durationSeconds) || 0);
+      reservedElevenLabsSeconds = await reserveElevenLabsSeconds(firebaseUid, estimatedDurationSeconds, requestId);
+
+      const lrclib = await resolveLrclibKeytermsForScribe(body, estimatedDurationSeconds, requestId);
+      scribeLog(requestId, "keyterms prepared", {
+        lrclibStatus: lrclib.metadata.status,
+        keytermCount: lrclib.keyterms.length,
+        selectedTrack: lrclib.metadata.selectedTrack || "",
+        selectedArtist: lrclib.metadata.selectedArtist || "",
+      });
+
+      const scribeResponse = await transcribeWithScribeV2WithRetry(Buffer.from(audioBase64, "base64"), {
+        apiKey,
+        fileName: body.fileName || body.songName || "audio",
+        mimeType: String(body.mimeType || ""),
+        sourceLanguage: normalizeLanguageCode(body.sourceLanguage),
+        keyterms: lrclib.keyterms,
+        requestId,
+      });
+
+      const segments = segmentsFromScribeResponse(scribeResponse);
+      if (!segments.length) {
+        throw new PublicError("Scribe did not return lyric segments for this audio.", 502);
+      }
+
+      const segmentEndSeconds = segments.reduce((max, segment) => Math.max(max, Number(segment?.end) || 0), 0);
+      const billableSeconds = Math.max(1, Math.ceil(Math.max(estimatedDurationSeconds, segmentEndSeconds)));
+      settledElevenLabsSeconds = await settleElevenLabsSeconds(
+        firebaseUid,
+        requestId,
+        reservedElevenLabsSeconds,
+        billableSeconds,
+      );
+
+      res.json({
+        source: SCRIBE_SOURCE,
+        transcriptionSource: SCRIBE_SOURCE,
+        model: ELEVENLABS_SCRIBE_MODEL,
+        transcriptionRequestMode: "batch",
+        languageCode: String(scribeResponse.language_code || ""),
+        languageProbability: Number.isFinite(Number(scribeResponse.language_probability))
+          ? Number(scribeResponse.language_probability)
+          : undefined,
+        streamStartSeconds: 0,
+        streamEndSeconds: billableSeconds,
+        keytermCount: lrclib.keyterms.length,
+        lrclib: lrclib.metadata,
+        billing: settledElevenLabsSeconds > 0
+          ? {
+            provider: "elevenlabs",
+            usedSeconds: settledElevenLabsSeconds,
+            reservedSeconds: reservedElevenLabsSeconds,
+          }
+          : undefined,
+        segments,
+      });
+    } catch (error: any) {
+      sendMediaPublicError(req, res, error, "Scribe transcription failed", "scribe.batch_error", {
+        requestId,
+        uidHash: hashLogId(firebaseUid),
+      });
+    } finally {
+      if (reservedElevenLabsSeconds > 0 && settledElevenLabsSeconds <= 0) {
+        await releaseElevenLabsReservation(
+          firebaseUid,
+          requestId,
+          reservedElevenLabsSeconds,
+          res.writableEnded ? "failed" : "canceled",
+        ).catch((error) => {
+          mediaLog("scribe.reservation_release_failed", {
+            requestId,
+            uidHash: hashLogId(firebaseUid),
+            reservedSeconds: reservedElevenLabsSeconds,
+            error: redactError(error),
+          }, "error");
+        });
+      }
+    }
+  });
+
   app.post("/api/translate/gemini", async (req, res) => {
     try {
       const body = req.body || {};
@@ -5331,136 +5309,6 @@ async function startServer() {
       port: PORT,
       backendOnly: process.env.BACKEND_ONLY === "true",
       firebaseAuthRequired: FIREBASE_AUTH_REQUIRED,
-    });
-  });
-
-  const liveScribeWss = new WebSocketServer({
-    server: httpServer,
-    path: "/api/elevenlabs/scribe-live",
-    maxPayload: LIVE_WS_MAX_PAYLOAD_BYTES,
-  });
-
-  liveScribeWss.on("connection", (client) => {
-    const session: LiveScribeSessionState = {
-      requestId: crypto.randomUUID().slice(0, 8),
-      firebaseUid: "",
-      reservedElevenLabsSeconds: 0,
-      settledElevenLabsSeconds: 0,
-      started: false,
-      canceled: false,
-      tmpPath: "",
-      streamStartSeconds: 0,
-      streamEndSeconds: NaN,
-      commitMarks: [],
-      relativeCommitMarks: [],
-      stopAtRelativeSeconds: NaN,
-    };
-
-    client.on("message", async (data) => {
-      let message: any = null;
-      try {
-        message = parseWsMessage(data);
-      } catch {
-        sendClientJson(client, { type: "error", error: "Invalid live Scribe message." });
-        return;
-      }
-
-      if (message.type === "cancel") {
-        session.canceled = true;
-        return;
-      }
-
-      if (message.type === "commit") {
-        const mark = Number(Number(message.at).toFixed(3));
-        const rejection = getLiveCommitRejection(mark, session.commitMarks, session.streamStartSeconds);
-        if (rejection) {
-          sendClientJson(client, {
-            type: "commit-rejected",
-            at: Number.isFinite(mark) ? mark : 0,
-            ...rejection,
-          });
-          return;
-        }
-
-        session.commitMarks.push(mark);
-        session.relativeCommitMarks.push(Number((mark - session.streamStartSeconds).toFixed(3)));
-        sendClientJson(client, { type: "commit-accepted", at: mark });
-        scribeLog(session.requestId, "live commit queued", {
-          at: mark,
-          relativeAt: Number((mark - session.streamStartSeconds).toFixed(3)),
-          total: session.commitMarks.length,
-        });
-        return;
-      }
-
-      if (message.type === "finish") {
-        const mark = Number(Number(message.at).toFixed(3));
-        const rejection = getLiveFinishRejection(mark, session.commitMarks, session.streamStartSeconds);
-        if (rejection) {
-          sendClientJson(client, {
-            type: "finish-rejected",
-            at: Number.isFinite(mark) ? mark : 0,
-            ...rejection,
-          });
-          return;
-        }
-
-        session.streamEndSeconds = mark;
-        session.stopAtRelativeSeconds = Math.max(0, Number((mark - session.streamStartSeconds).toFixed(3)));
-        sendClientJson(client, {
-          type: "status",
-          status: "finishing",
-          message: "Finishing section",
-          at: mark,
-        });
-        scribeLog(session.requestId, "live finish queued", {
-          at: mark,
-          relativeAt: session.stopAtRelativeSeconds,
-        });
-        return;
-      }
-
-      if (message.type === "start") {
-        if (session.started) {
-          sendClientJson(client, { type: "error", error: "Live Scribe has already started for this song." });
-          return;
-        }
-
-        try {
-          const firebaseUser = await verifyFirebaseIdToken(message.authToken);
-          session.firebaseUid = firebaseUser?.uid || "";
-          session.reservedElevenLabsSeconds = await reserveElevenLabsSeconds(
-            session.firebaseUid,
-            Number(message.estimatedDurationSeconds) || 0,
-            session.requestId,
-          );
-        } catch (error: any) {
-          const publicError = error instanceof PublicError ? error : new PublicError("Your sign-in session could not be verified.", 401);
-          sendClientErrorAndClose(client, publicError.message, publicError.status);
-          return;
-        }
-
-        session.streamStartSeconds = Math.max(0, Number(message.startSeconds) || 0);
-        session.started = true;
-        runLiveScribeSession(client, session, message).catch((error) => {
-          mediaLog("scribe.unhandled_error", {
-            requestId: session.requestId,
-            uidHash: hashLogId(session.firebaseUid),
-            error: redactError(error),
-          }, "error");
-        });
-        return;
-      }
-
-      sendClientJson(client, { type: "error", error: "Unsupported live Scribe message." });
-    });
-
-    client.on("close", () => {
-      session.canceled = true;
-    });
-
-    client.on("error", () => {
-      session.canceled = true;
     });
   });
 }

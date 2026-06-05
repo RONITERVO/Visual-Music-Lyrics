@@ -4,10 +4,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bot, Check, CreditCard, Download, Loader2, Music2, Pause, Play, RefreshCw, RotateCcw, Search, Settings, Sparkles, Trash2, Upload, X, Youtube } from "lucide-react";
 import { useStore } from "../lib/store";
-import { cleanTitle, formatBytes, formatClock, formatPreciseClock } from "../lib/utils";
+import { cleanTitle, formatBytes, formatClock, formatPreciseClock, getBrowserLanguageCode } from "../lib/utils";
 import { VisualizerEngine } from "../lib/graphics/VisualizerEngine";
 import { addAudioFiles, loadSongSegments } from "../lib/fileHandlers";
-import { createLiveScribeSession, LiveScribeSession } from "../lib/liveScribe";
+import { createScribeTranscript } from "../lib/scribe";
 import { translateSegments } from "../lib/translate";
 import { createElevenLabsCheckoutSession, fetchElevenLabsEntitlement, type ElevenLabsEntitlement } from "../lib/billing";
 import { buildGeneratedTimingText, replaceSegmentsInRange, saveSongTiming } from "../lib/timing";
@@ -20,8 +20,6 @@ const ELEVENLABS_AUTO_COMMIT_LIMIT_SECONDS = 90;
 const LOCAL_AUTO_COMMIT_BUFFER_SECONDS = 5;
 const MIN_COMMIT_SEGMENT_SECONDS = 15;
 const AUTO_COMMIT_SEGMENT_SECONDS = ELEVENLABS_AUTO_COMMIT_LIMIT_SECONDS - LOCAL_AUTO_COMMIT_BUFFER_SECONDS;
-const COMMIT_GRACE_SECONDS = 0;
-const PLAYBACK_ENDED_TOLERANCE_SECONDS = 0.25;
 const YOUTUBE_CACHED_RESOLVE_DELAY_MS = 120;
 const YOUTUBE_VIDEO_RESOLVE_DELAY_MS = 350;
 const YOUTUBE_DIRECT_CHANNEL_RESOLVE_DELAY_MS = 650;
@@ -42,7 +40,6 @@ type YoutubeChannelSuggestion = {
   result?: YoutubeResolveResult;
 };
 
-type RegenerateMode = "scribe" | "translate";
 type SourceKind = "youtube" | "scribe" | "gemini" | "loaded" | "none";
 
 type SourceStat = {
@@ -335,7 +332,7 @@ function buildTimingTextFromExisting(song: any, timingData: any, segments: any[]
     generatedAt: _oldGeneratedAt,
     ...existingMeta
   } = existing;
-  const transcriptionSource = String(existing?.transcriptionSource || existing?.source || song?.timing?.source || "elevenlabs-scribe-v2-realtime");
+  const transcriptionSource = String(existing?.transcriptionSource || existing?.source || song?.timing?.source || "elevenlabs-scribe-v2");
 
   return JSON.stringify({
     ...existingMeta,
@@ -593,7 +590,6 @@ function SearchOverlay({
   isSectionMode,
   isSectionFinishing,
   isTranslationRangePlaying,
-  regenerateMode,
   transcriptSourceSummary,
   translationSourceSummary,
   canCommit,
@@ -604,7 +600,6 @@ function SearchOverlay({
   scribeMessage,
   commitFeedback,
   onSliderChange,
-  onRegenerateModeChange,
   onToggleSectionMode,
   onTransportClick,
 }: {
@@ -638,7 +633,6 @@ function SearchOverlay({
   isSectionMode: boolean;
   isSectionFinishing: boolean;
   isTranslationRangePlaying: boolean;
-  regenerateMode: RegenerateMode;
   transcriptSourceSummary: SourceSummary;
   translationSourceSummary: SourceSummary;
   canCommit: boolean;
@@ -649,7 +643,6 @@ function SearchOverlay({
   scribeMessage: string;
   commitFeedback: string;
   onSliderChange: (value: number) => void;
-  onRegenerateModeChange: (mode: RegenerateMode) => void;
   onToggleSectionMode: () => void;
   onTransportClick: () => void;
 }) {
@@ -666,7 +659,7 @@ function SearchOverlay({
   const [billingStatus, setBillingStatus] = useState<"idle" | "loading" | "checkout" | "error">("idle");
   const [billingMessage, setBillingMessage] = useState("");
   const selectedSong = audioFiles.find((audio) => audio.id === selectedAudioId) || null;
-  const isTranslationRangePreview = Boolean(isSectionMode && regenerateMode === "translate" && isTranslationRangePlaying);
+  const isTranslationRangePreview = Boolean(isSectionMode && isTranslationRangePlaying);
   const sliderValue = isSectionMode && !isCapturing && !isTranslationRangePreview ? sectionStart : currentTime;
   const isSyncedPlayback = Boolean(selectedSong?.timing) && !isCapturing && !isSectionMode;
   const shouldShowSongPicker = isSongPickerOpen || query.trim().length > 0;
@@ -674,21 +667,13 @@ function SearchOverlay({
   const isYoutubeUrlQuery = isYoutubeUrlInput(query) || query.trim().startsWith("@");
   const isYoutubeChannelSuggestionQuery = Boolean(query.trim() && youtubeInputKind === "channel" && !isDirectYoutubeLookup(query));
   const isYoutubeQuery = Boolean(youtubeInputKind && (isDirectYoutubeLookup(query) || youtubeStatus !== "idle" || youtubeResults.length > 0));
-  const translateModeSourceKind: SourceKind = "gemini";
-  const canUseSelectedRegenerateMode = regenerateMode === "translate" ? Boolean(selectedSong?.timing) : Boolean(selectedSong?.file);
-  const scribeModeLabel = translationEnabled ? "Scribe + translate" : "Scribe only";
-  const regenerateLabel = regenerateMode === "translate"
-    ? "Replace translations in range"
-    : translationEnabled
-      ? "Regenerate range with Scribe and translate"
-      : "Regenerate range with Scribe";
+  const canUseTranslationRange = Boolean(selectedSong?.timing);
+  const regenerateLabel = "Replace translations in range";
   const transportLabel = isBackendProcessing
     ? "Working"
-    : isSectionMode && regenerateMode === "translate"
+    : isSectionMode
       ? (isTranslationRangePlaying ? "Apply translation range" : "Preview translation range")
-      : isSectionMode && isCapturing
-        ? "Finish section"
-        : isSyncedPlayback && isPlaying
+      : isSyncedPlayback && isPlaying
           ? "Pause"
           : isPlaying
             ? "Playback running"
@@ -696,9 +681,9 @@ function SearchOverlay({
   const transportDisabled = !selectedSong ||
     isBackendProcessing ||
     isSectionFinishing ||
-    (isSectionMode && regenerateMode === "translate"
+    (isSectionMode
       ? !selectedSong.timing
-      : ((!isSectionMode && isPlaying && !isSyncedPlayback) || (isSectionMode && isCapturing && !canCommit)));
+      : (!isSectionMode && isPlaying && !isSyncedPlayback));
 
   const filteredSongs = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -821,7 +806,7 @@ function SearchOverlay({
 
   return (
     <section
-      className="fixed right-3 top-3 left-[calc(var(--binder-spine-width)+0.75rem)] z-50 grid max-h-[calc(100svh-1.5rem)] min-w-0 gap-1.5 overflow-y-auto overscroll-contain pr-0.5 text-ink-graphite sm:left-auto sm:right-4 sm:top-4 sm:w-[min(420px,calc(100vw-2.5rem))] sm:gap-2 sm:pr-0"
+      className="fixed right-3 top-3 left-[calc(var(--binder-spine-width)+0.75rem)] z-50 grid max-h-[calc(100svh-1.5rem)] min-w-0 gap-1.5 overflow-x-hidden overflow-y-auto overscroll-contain pr-0.5 text-ink-graphite sm:left-auto sm:right-4 sm:top-4 sm:w-[min(420px,calc(100vw-2.5rem))] sm:gap-2 sm:pr-0"
       data-control="true"
       onClick={(event) => event.stopPropagation()}
     >
@@ -889,7 +874,7 @@ function SearchOverlay({
               label={regenerateLabel}
               className={isSectionMode ? "border-ink-blueprint text-ink-blueprint" : ""}
               onClick={onToggleSectionMode}
-              disabled={!selectedSong || !canUseSelectedRegenerateMode || isCapturing || isSectionFinishing || isBackendProcessing}
+              disabled={!selectedSong || !canUseTranslationRange || isCapturing || isSectionFinishing || isBackendProcessing}
             >
               <RefreshCw size={17} />
             </ControlIconButton>
@@ -900,45 +885,14 @@ function SearchOverlay({
             >
               {isBackendProcessing
                 ? <Loader2 size={18} className="animate-spin" />
-                : isSectionMode && regenerateMode === "translate" && isTranslationRangePlaying
+                : isSectionMode && isTranslationRangePlaying
                   ? <Check size={18} />
-                : isSectionMode && isCapturing
-                ? <Check size={18} />
                 : isSyncedPlayback && isPlaying
                   ? <Pause size={18} />
                   : <Play size={18} />}
             </ControlIconButton>
           </div>
         </div>
-
-        {selectedSong?.timing && (
-          <div className="grid grid-cols-2 gap-1 rounded-[6px] border border-ink-graphite/15 p-1" role="group" aria-label="Regenerate mode">
-            <button
-              type="button"
-              className={`flex min-w-0 items-center justify-center gap-1.5 rounded-[5px] px-2 py-1 font-body text-[0.78rem] leading-tight transition sm:text-[0.84rem] ${
-                regenerateMode === "scribe" ? "bg-ink-blueprint text-paper-light" : "text-ink-graphite-light hover:bg-ink-blueprint/10 hover:text-ink-blueprint"
-              }`}
-              onClick={() => onRegenerateModeChange("scribe")}
-              disabled={!selectedSong.file || isCapturing || isSectionFinishing || isBackendProcessing}
-              title={translationEnabled ? "Scribe plus translation" : "Scribe only"}
-            >
-              <Bot size={13} className="shrink-0" />
-              <span className="truncate">{scribeModeLabel}</span>
-            </button>
-            <button
-              type="button"
-              className={`flex min-w-0 items-center justify-center gap-1.5 rounded-[5px] px-2 py-1 font-body text-[0.78rem] leading-tight transition sm:text-[0.84rem] ${
-                regenerateMode === "translate" ? "bg-ink-blueprint text-paper-light" : "text-ink-graphite-light hover:bg-ink-blueprint/10 hover:text-ink-blueprint"
-              }`}
-              onClick={() => onRegenerateModeChange("translate")}
-              disabled={isCapturing || isSectionFinishing || isBackendProcessing}
-              title="Replace translations only"
-            >
-              <SourceKindIcon kind={translateModeSourceKind} />
-              <span className="truncate">Translations only</span>
-            </button>
-          </div>
-        )}
 
         {duration > 0 && (
           <div className="grid gap-1">
@@ -1185,7 +1139,7 @@ function SearchOverlay({
 
       {isKeyGateOpen && (
         <form
-          className="grid gap-3 rounded-[8px] border border-ink-graphite/20 bg-paper-light/95 p-3 shadow-lg backdrop-blur-md"
+          className="grid min-w-0 gap-3 overflow-x-hidden rounded-[8px] border border-ink-graphite/20 bg-paper-light/95 p-3 shadow-lg backdrop-blur-md"
           autoComplete="off"
           onSubmit={(event) => event.preventDefault()}
         >
@@ -1226,21 +1180,21 @@ function SearchOverlay({
           <p className="rounded-[6px] border border-ink-blueprint/15 bg-ink-blueprint/5 px-3 py-2 font-body text-[0.82rem] leading-5 text-ink-graphite">
             Gemini translation and media processing use server-side production credentials.
           </p>
-          <div className="grid grid-cols-1 gap-2 min-[260px]:grid-cols-2">
-            <label className="grid gap-1 font-body text-[0.95rem]">
+          <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
+            <label className="grid min-w-0 gap-1 font-body text-[0.95rem]">
               Source
               <input
-                className="rounded-[6px] border border-ink-graphite/25 bg-transparent px-2 py-1 outline-none focus:border-ink-blueprint"
+                className="min-w-0 w-full rounded-[6px] border border-ink-graphite/25 bg-transparent px-2 py-1 outline-none focus:border-ink-blueprint"
                 list="source-language-options"
                 value={sourceLanguage}
                 onChange={(event) => useStore.setState({ sourceLanguage: event.target.value })}
                 placeholder="auto"
               />
             </label>
-            <label className="grid gap-1 font-body text-[0.95rem]">
+            <label className="grid min-w-0 gap-1 font-body text-[0.95rem]">
               Target
               <input
-                className="rounded-[6px] border border-ink-graphite/25 bg-transparent px-2 py-1 outline-none focus:border-ink-blueprint"
+                className="min-w-0 w-full rounded-[6px] border border-ink-graphite/25 bg-transparent px-2 py-1 outline-none focus:border-ink-blueprint"
                 list="target-language-options"
                 value={targetLanguage}
                 onChange={(event) => useStore.setState({ targetLanguage: event.target.value })}
@@ -1331,7 +1285,7 @@ async function saveYoutubeCaptionTimingForSong(songId: string, caption: YoutubeC
 
   const requestedSourceLanguage = normalizeLanguage(state.sourceLanguage);
   const sourceLanguage = requestedSourceLanguage || "auto";
-  const targetLanguage = state.targetLanguage.trim() || "en";
+  const targetLanguage = state.targetLanguage.trim() || getBrowserLanguageCode();
   const shouldTranslate = Boolean(state.translationEnabled && targetLanguage);
   let translationSource = hasTranslations(outputSegments) ? (caption.translationSource || "youtube-captions-timedtext") : "";
   let translationError = "";
@@ -1542,13 +1496,11 @@ export function PlayerView() {
 
   const visualizerRef = useRef<VisualizerEngine | null>(null);
   const rafId = useRef<number>(0);
-  const sessionRef = useRef<LiveScribeSession | null>(null);
+  const scribeAbortRef = useRef<AbortController | null>(null);
   const activeSongIdRef = useRef<string | null>(null);
-  const activeModeRef = useRef<"full" | "section" | null>(null);
+  const activeModeRef = useRef<"full" | null>(null);
   const completedSongIdsRef = useRef<Set<string>>(new Set());
   const failedSongIdsRef = useRef<Set<string>>(new Set());
-  const commitMarksRef = useRef<number[]>([]);
-  const lastCommitAtRef = useRef(0);
   const sectionStartRef = useRef(0);
   const sectionEndRef = useRef<number>(NaN);
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -1573,7 +1525,6 @@ export function PlayerView() {
   const [isSectionFinishing, setIsSectionFinishing] = useState(false);
   const [isTranslationRangePlaying, setIsTranslationRangePlaying] = useState(false);
   const [isReplacingTranslations, setIsReplacingTranslations] = useState(false);
-  const [regenerateMode, setRegenerateMode] = useState<RegenerateMode>("scribe");
   const [sectionStart, setSectionStart] = useState(0);
 
   const song = audioFiles.find((audio) => audio.id === selectedAudioId) || null;
@@ -1582,34 +1533,25 @@ export function PlayerView() {
   const translationSourceSummary = useMemo(() => getTranslationSourceSummary(segments, timingData), [segments, timingData]);
   const currentSegment = currentSegmentIndex >= 0 ? segments[currentSegmentIndex] : null;
   const isCapturing = Boolean(song && activeSongIdRef.current === song.id && scribeStatus !== "saved" && scribeStatus !== "error");
-  const isSectionCapturing = isCapturing && activeModeRef.current === "section";
+  const isSectionCapturing = false;
   const nextCommitAt = lastManualCommitAt > 0 ? lastManualCommitAt + MIN_COMMIT_SEGMENT_SECONDS : MIN_COMMIT_SEGMENT_SECONDS;
   const autoCommitAt = lastManualCommitAt > 0 ? lastManualCommitAt + AUTO_COMMIT_SEGMENT_SECONDS : AUTO_COMMIT_SEGMENT_SECONDS;
   const nextCommitAtDisplay = duration > 0 ? Math.min(nextCommitAt, duration) : nextCommitAt;
   const autoCommitAtDisplay = duration > 0 ? Math.min(autoCommitAt, duration) : autoCommitAt;
-  const songEndedForUser = duration > 0 && !isPlaying && currentTime >= Math.max(0, duration - PLAYBACK_ENDED_TOLERANCE_SECONDS);
   const isBackendProcessing = Boolean(
     song && (
       isReplacingTranslations ||
       (activeSongIdRef.current === song.id && (
         isSectionFinishing ||
         scribeStatus === "translating" ||
-        (activeModeRef.current === "full" && scribeStatus === "streaming" && songEndedForUser)
+        scribeStatus === "transcribing"
       ))
     )
   );
-  const showCommitControls = Boolean(
-    song &&
-    activeSongIdRef.current === song.id &&
-    scribeStatus === "streaming" &&
-    !isSectionFinishing &&
-    !isBackendProcessing
-  );
-  const canCommit = showCommitControls && currentTime + COMMIT_GRACE_SECONDS >= nextCommitAt;
+  const showCommitControls = false;
+  const canCommit = false;
   const commitProgressTarget = Math.max(lastManualCommitAt, autoCommitAtDisplay);
-  const commitProgress = showCommitControls
-    ? Math.min(1, Math.max(0, (currentTime - lastManualCommitAt) / Math.max(0.001, commitProgressTarget - lastManualCommitAt)))
-    : 1;
+  const commitProgress = 1;
   const statusTitle = !song
     ? "Drop"
     : isReplacingTranslations
@@ -1618,10 +1560,10 @@ export function PlayerView() {
       ? "Range"
     : isBackendProcessing
       ? (scribeStatus === "translating" ? "Translate" : "Syncing")
-      : showCommitControls
-        ? (canCommit ? "Mark" : "Wait")
-        : scribeStatus === "preparing"
+    : scribeStatus === "preparing"
           ? "Prep"
+          : scribeStatus === "transcribing"
+            ? "Syncing"
           : scribeStatus === "saved"
             ? "Saved"
             : scribeStatus === "error"
@@ -1638,12 +1580,8 @@ export function PlayerView() {
     : isBackendProcessing
       ? (scribeStatus === "translating"
           ? "Translating."
-          : activeModeRef.current === "section"
-            ? "Finalizing."
-            : "Finalizing transcript.")
-      : showCommitControls
-        ? (commitFeedback || (canCommit ? "Tap to add a split." : `Next mark ${formatClock(nextCommitAtDisplay)}.`))
-        : (commitFeedback || (duration ? `${formatClock(currentTime)} / ${formatClock(duration)}` : " "));
+          : "Finalizing transcript.")
+    : (commitFeedback || (duration ? `${formatClock(currentTime)} / ${formatClock(duration)}` : " "));
 
   useEffect(() => {
     const input = query.trim();
@@ -1741,7 +1679,7 @@ export function PlayerView() {
     rafId.current = requestAnimationFrame(tick);
 
     return () => {
-      sessionRef.current?.close();
+      scribeAbortRef.current?.abort();
       visualizerRef.current?.destroy();
       cancelAnimationFrame(rafId.current);
     };
@@ -1871,193 +1809,128 @@ export function PlayerView() {
     sectionEndRef.current = NaN;
   }, [song?.id]);
 
-  const startLiveScribe = useCallback((mode: "full" | "section", startSeconds = 0) => {
+  const startScribe = useCallback(async () => {
     if (!song?.id || !song.file) return false;
 
-    sessionRef.current?.close();
-    sessionRef.current = null;
+    scribeAbortRef.current?.abort();
+    const controller = new AbortController();
+    scribeAbortRef.current = controller;
 
     const state = useStore.getState();
     const sourceLanguage = normalizeLanguage(state.sourceLanguage);
-    const targetLanguage = state.targetLanguage.trim() || "en";
-    const safeStartSeconds = Math.max(0, Number(startSeconds) || 0);
-    const audioDuration = Number(getAudioElement().duration) || 0;
-    const remainingAudioSeconds = Math.max(0, audioDuration - safeStartSeconds);
-    const estimatedDurationSeconds = mode === "section"
-      ? Math.min(remainingAudioSeconds, ELEVENLABS_AUTO_COMMIT_LIMIT_SECONDS)
-      : remainingAudioSeconds;
+    const targetLanguage = state.targetLanguage.trim() || getBrowserLanguageCode();
+    const audioDuration = Number(getAudioElement().duration) ||
+      Number(song.durationSeconds) ||
+      Number(song.youtubeDurationSeconds) ||
+      0;
 
-    commitMarksRef.current = [];
-    lastCommitAtRef.current = safeStartSeconds;
-    sectionStartRef.current = safeStartSeconds;
+    sectionStartRef.current = 0;
     sectionEndRef.current = NaN;
     activeSongIdRef.current = song.id;
-    activeModeRef.current = mode;
+    activeModeRef.current = "full";
     setIsSectionFinishing(false);
 
     useStore.setState({
       scribeStatus: "preparing",
-      scribeMessage: mode === "section" ? "Preparing section" : "Preparing audio",
+      scribeMessage: "Preparing audio",
       manualCommitMarks: [],
-      lastManualCommitAt: safeStartSeconds,
+      lastManualCommitAt: 0,
       commitFeedback: "",
     });
 
-    let session;
     try {
-      session = createLiveScribeSession({
+      useStore.setState({ scribeStatus: "transcribing", scribeMessage: "Syncing" });
+
+      const payload = await createScribeTranscript({
         file: song.file,
         sourceLanguage,
-        previousText: sourceLanguage ? `Song lyrics in ${sourceLanguage}` : "Song lyrics",
-        startSeconds: safeStartSeconds,
-        estimatedDurationSeconds,
-      }, {
-        onStatus: (status, message) => {
-          if (activeSongIdRef.current !== song.id || activeModeRef.current !== mode) return;
-          useStore.setState({
-            scribeStatus: status === "preparing" ? "preparing" : "streaming",
-            scribeMessage: message || "",
+        estimatedDurationSeconds: audioDuration,
+        songName: song.name,
+        songBase: song.base,
+        youtubeTitle: song.youtubeTitle || song.youtubeVideoTitle || "",
+        youtubeChannelTitle: song.youtubeChannelTitle || "",
+      }, controller.signal);
+
+      if (controller.signal.aborted || activeSongIdRef.current !== song.id || activeModeRef.current !== "full") {
+        return false;
+      }
+
+      let outputSegments = Array.isArray(payload.segments) ? payload.segments : [];
+      if (!outputSegments.length) {
+        throw new Error("Scribe did not return lyric segments for this audio.");
+      }
+
+      let translationSource = "";
+      let translationError = "";
+      const latest = useStore.getState();
+      const detectedSourceLanguage = sourceLanguage || payload.languageCode || "auto";
+
+      if (latest.translationEnabled) {
+        useStore.setState({ scribeStatus: "translating", scribeMessage: "Translating" });
+        try {
+          const translationResult = await translateSegments({
+            segments: outputSegments,
+            sourceLanguage: detectedSourceLanguage === "auto" ? "" : detectedSourceLanguage,
+            targetLanguage,
           });
-        },
-        onCommitAccepted: (mark) => {
-          if (activeSongIdRef.current !== song.id || activeModeRef.current !== mode) return;
-          useStore.setState({ commitFeedback: `Committed ${formatClock(mark)}` });
-        },
-        onCommitRejected: (mark, reason, nextAllowedAt) => {
-          if (activeSongIdRef.current !== song.id || activeModeRef.current !== mode) return;
-          const lastLocalMark = commitMarksRef.current[commitMarksRef.current.length - 1];
-          if (lastLocalMark != null && Math.abs(lastLocalMark - mark) < 0.01) {
-            commitMarksRef.current = commitMarksRef.current.slice(0, -1);
-            const lastAccepted = commitMarksRef.current[commitMarksRef.current.length - 1] || sectionStartRef.current || 0;
-            lastCommitAtRef.current = lastAccepted;
-            useStore.setState({ manualCommitMarks: commitMarksRef.current, lastManualCommitAt: lastAccepted });
-          }
-          useStore.setState({ commitFeedback: `${reason} ${formatClock(nextAllowedAt)}` });
-        },
-        onFinishRejected: (_mark, reason, nextAllowedAt) => {
-          if (activeSongIdRef.current !== song.id || activeModeRef.current !== mode) return;
-          setIsSectionFinishing(false);
-          useStore.setState({ commitFeedback: `${reason} ${formatClock(nextAllowedAt)}` });
-          getAudioElement().play().catch(() => {});
-        },
-        onResult: async (payload) => {
-          if (activeSongIdRef.current !== song.id || activeModeRef.current !== mode) return;
+          outputSegments = translationResult.segments;
+          translationSource = translationResult.translationSource || "gemini";
+          outputSegments = annotateTranslatedSegments(outputSegments, translationSource);
+        } catch (error: any) {
+          translationError = getErrorMessage(error);
+        }
+      }
 
-          try {
-            let outputSegments = Array.isArray(payload.segments) ? payload.segments : [];
-            if (!outputSegments.length) {
-              throw new Error("Scribe did not return lyric segments for this audio.");
-            }
-
-            let translationSource = "";
-            let translationError = "";
-            const latest = useStore.getState();
-
-            if (latest.translationEnabled) {
-              useStore.setState({ scribeStatus: "translating", scribeMessage: "Translating" });
-              try {
-                const translationResult = await translateSegments({
-                  segments: outputSegments,
-                  sourceLanguage,
-                  targetLanguage,
-                });
-                outputSegments = translationResult.segments;
-                translationSource = translationResult.translationSource || "gemini";
-                outputSegments = annotateTranslatedSegments(outputSegments, translationSource);
-              } catch (error: any) {
-                translationError = getErrorMessage(error);
-              }
-            }
-
-            const streamStartSeconds = Number.isFinite(Number(payload.streamStartSeconds))
-              ? Number(payload.streamStartSeconds)
-              : safeStartSeconds;
-            const streamEndSeconds = Number.isFinite(Number(payload.streamEndSeconds))
-              ? Number(payload.streamEndSeconds)
-              : outputSegments.reduce((end, segment) => Math.max(end, Number(segment?.end) || streamStartSeconds), streamStartSeconds);
-            const existingTimingData = mode === "section" ? parseTimingTextCache(song) : null;
-            const existingTranslationSource = String(existingTimingData?.translationSource || existingTimingData?.youtubeCaptionTrack?.translationSource || "");
-            const finalSegments = ensureSegmentTranslationSources(mode === "section"
-              ? replaceSegmentsInRange(useStore.getState().segments, outputSegments, streamStartSeconds, streamEndSeconds)
-              : outputSegments, existingTranslationSource);
-            const finalTranslationSource = getAggregateTranslationSource(finalSegments, translationSource || existingTranslationSource);
-
-            const timingText = buildGeneratedTimingText({
-              segments: finalSegments,
-              sourceLanguage,
-              targetLanguage,
-              translationEnabled: latest.translationEnabled,
-              translationSource: finalTranslationSource,
-              translationError,
-              manualCommitMarks: Array.isArray(payload.manualCommitMarks) ? payload.manualCommitMarks : commitMarksRef.current,
-            });
-
-            await saveSongTiming(song.id, timingText);
-            if (mode === "full") completedSongIdsRef.current.add(song.id);
-            activeSongIdRef.current = null;
-            activeModeRef.current = null;
-            sessionRef.current = null;
-            setIsSectionFinishing(false);
-            if (mode === "section") setIsSectionMode(false);
-            useStore.setState({
-              scribeStatus: "saved",
-              scribeMessage: translationError ? "Synced without translation" : "Synced",
-              commitFeedback: translationError || "",
-            });
-          } catch (error: any) {
-            if (mode === "full") failedSongIdsRef.current.add(song.id);
-            activeSongIdRef.current = null;
-            activeModeRef.current = null;
-            sessionRef.current = null;
-            setIsSectionFinishing(false);
-            useStore.setState({
-              scribeStatus: "error",
-              scribeMessage: mode === "section" ? "Section failed" : "Scribe failed",
-              commitFeedback: getErrorMessage(error),
-            });
-          }
-        },
-        onError: (message) => {
-          if (activeSongIdRef.current !== song.id || activeModeRef.current !== mode) return;
-          if (mode === "full") failedSongIdsRef.current.add(song.id);
-          activeSongIdRef.current = null;
-          activeModeRef.current = null;
-          sessionRef.current = null;
-          setIsSectionFinishing(false);
-          useStore.setState({
-            scribeStatus: "error",
-            scribeMessage: mode === "section" ? "Section failed" : "Scribe failed",
-            commitFeedback: message,
-          });
-        },
+      const finalSegments = ensureSegmentTranslationSources(outputSegments, "");
+      const finalTranslationSource = getAggregateTranslationSource(finalSegments, translationSource);
+      const timingText = buildGeneratedTimingText({
+        segments: finalSegments,
+        sourceLanguage: detectedSourceLanguage,
+        targetLanguage,
+        translationEnabled: latest.translationEnabled,
+        translationSource: finalTranslationSource,
+        translationError,
+        transcriptionSource: payload.source || "elevenlabs-scribe-v2",
+        commitStrategy: "batch",
+        manualCommitMarks: [],
       });
-    } catch (error: any) {
+
+      await saveSongTiming(song.id, timingText);
+      completedSongIdsRef.current.add(song.id);
       activeSongIdRef.current = null;
       activeModeRef.current = null;
-      sessionRef.current = null;
+      if (scribeAbortRef.current === controller) scribeAbortRef.current = null;
       setIsSectionFinishing(false);
       useStore.setState({
+        scribeStatus: "saved",
+        scribeMessage: translationError ? "Synced without translation" : "Synced",
+        commitFeedback: translationError || "",
+      });
+      return true;
+    } catch (error: any) {
+      if (controller.signal.aborted) return false;
+      activeSongIdRef.current = null;
+      activeModeRef.current = null;
+      if (scribeAbortRef.current === controller) scribeAbortRef.current = null;
+      setIsSectionFinishing(false);
+      failedSongIdsRef.current.add(song.id);
+      useStore.setState({
         scribeStatus: "error",
-        scribeMessage: mode === "section" ? "Section failed" : "Scribe failed",
+        scribeMessage: "Scribe failed",
         commitFeedback: getErrorMessage(error),
       });
       return false;
     }
-
-    sessionRef.current = session;
-    return true;
-  }, [song?.id, song?.file, song?.timing?.textCache]);
+  }, [song?.id, song?.file, song?.name, song?.base, song?.youtubeTitle, song?.youtubeVideoTitle, song?.youtubeChannelTitle, song?.durationSeconds, song?.youtubeDurationSeconds]);
 
   useEffect(() => {
     if (!song?.id) return;
 
     if (activeSongIdRef.current && activeSongIdRef.current !== song.id) {
-      sessionRef.current?.close();
-      sessionRef.current = null;
+      scribeAbortRef.current?.abort();
+      scribeAbortRef.current = null;
       activeSongIdRef.current = null;
       activeModeRef.current = null;
-      commitMarksRef.current = [];
-      lastCommitAtRef.current = 0;
       useStore.setState({
         manualCommitMarks: [],
         lastManualCommitAt: 0,
@@ -2070,7 +1943,7 @@ export function PlayerView() {
     if (isSectionMode) {
       useStore.setState({
         scribeStatus: "idle",
-        scribeMessage: regenerateMode === "translate" ? "Translation range" : "Section ready",
+        scribeMessage: "Translation range",
         manualCommitMarks: [],
         lastManualCommitAt: sectionStart,
       });
@@ -2105,66 +1978,8 @@ export function PlayerView() {
     }
 
     if (completedSongIdsRef.current.has(song.id) || failedSongIdsRef.current.has(song.id)) return;
-    startLiveScribe("full", 0);
-  }, [isPlaying, isSectionMode, regenerateMode, sectionStart, song?.id, song?.file, song?.timing, startLiveScribe]);
-
-  const commitHere = useCallback(() => {
-    if (!isCapturing || !song || isSectionFinishing) return;
-
-    const mark = Number(currentTime.toFixed(3));
-    const nextAllowedAt = lastCommitAtRef.current > 0
-      ? lastCommitAtRef.current + MIN_COMMIT_SEGMENT_SECONDS
-      : MIN_COMMIT_SEGMENT_SECONDS;
-
-    if (mark + COMMIT_GRACE_SECONDS < nextAllowedAt) {
-      useStore.setState({ commitFeedback: `Can click in: ${formatClock(nextAllowedAt)}` });
-      return;
-    }
-
-    lastCommitAtRef.current = mark;
-    commitMarksRef.current = [...commitMarksRef.current, mark];
-    useStore.setState({
-      manualCommitMarks: commitMarksRef.current,
-      lastManualCommitAt: mark,
-      commitFeedback: `Committed ${formatClock(mark)}`,
-    });
-    sessionRef.current?.commit(mark);
-  }, [currentTime, isCapturing, isSectionFinishing, song]);
-
-  useEffect(() => {
-    if (!isCapturing || isSectionFinishing || !song) return;
-    if (currentTime < autoCommitAt) return;
-    commitHere();
-  }, [autoCommitAt, commitHere, currentTime, isCapturing, isSectionFinishing, song]);
-
-  const startSectionCapture = useCallback(async () => {
-    if (!song?.file || isCapturing || isSectionFinishing || isReplacingTranslations) return;
-    const start = seekToTime(sectionStart);
-    const didPlay = await playCurrentSong(start);
-    if (!didPlay) {
-      useStore.setState({ commitFeedback: "Playback could not start." });
-      return;
-    }
-    startLiveScribe("section", start);
-  }, [isCapturing, isReplacingTranslations, isSectionFinishing, playCurrentSong, sectionStart, seekToTime, song?.file, startLiveScribe]);
-
-  const finishSectionCapture = useCallback(() => {
-    if (!isSectionCapturing || isSectionFinishing) return;
-
-    const mark = Number(currentTime.toFixed(3));
-    const nextAllowedAt = lastCommitAtRef.current + MIN_COMMIT_SEGMENT_SECONDS;
-    if (mark < nextAllowedAt) {
-      useStore.setState({ commitFeedback: `Next ${formatClock(nextAllowedAt)}` });
-      return;
-    }
-
-    sectionEndRef.current = mark;
-    setIsSectionFinishing(true);
-    sessionRef.current?.finish(mark);
-    const audioEl = getAudioElement();
-    audioEl.pause();
-    useStore.setState({ scribeMessage: "Finishing section", commitFeedback: `${formatClock(sectionStartRef.current)} - ${formatClock(mark)}` });
-  }, [currentTime, isSectionCapturing, isSectionFinishing]);
+    void startScribe();
+  }, [isPlaying, isSectionMode, sectionStart, song?.id, song?.file, song?.timing, startScribe]);
 
   const startTranslationRangePreview = useCallback(async () => {
     if (!song?.timing || isReplacingTranslations) return;
@@ -2212,7 +2027,7 @@ export function PlayerView() {
     setIsReplacingTranslations(true);
 
     const latest = useStore.getState();
-    const targetLanguage = latest.targetLanguage.trim() || "en";
+    const targetLanguage = latest.targetLanguage.trim() || getBrowserLanguageCode();
     const sourceLanguage = normalizeLanguage(latest.sourceLanguage);
     const translationRangeLabel = `${formatClock(start)} - ${formatClock(end)}`;
     useStore.setState({
@@ -2242,7 +2057,7 @@ export function PlayerView() {
       );
       const timingText = buildTimingTextFromExisting(song, timingSnapshot, nextSegments, {
         sourceLanguage: sourceLanguage || timingSnapshot?.sourceLanguage || "auto",
-        targetLanguage: targetLanguage || timingSnapshot?.targetLanguage || "en",
+        targetLanguage: targetLanguage || timingSnapshot?.targetLanguage || getBrowserLanguageCode(),
         translationSource: getAggregateTranslationSource(nextSegments, translationSource || existingTranslationSource),
       });
 
@@ -2267,25 +2082,8 @@ export function PlayerView() {
     }
   }, [currentTime, isReplacingTranslations, song]);
 
-  const handleRegenerateModeChange = useCallback((mode: RegenerateMode) => {
-    if (isCapturing || isSectionFinishing || isBackendProcessing) return;
-    setRegenerateMode(mode);
-    setIsTranslationRangePlaying(false);
-    getAudioElement().pause();
-
-    if (isSectionMode) {
-      const start = sectionStartRef.current || sectionStart;
-      useStore.setState({
-        scribeMessage: mode === "translate" ? "Translation range" : "Section ready",
-        commitFeedback: `${formatClock(start)} / ${formatClock(duration)}`,
-        manualCommitMarks: [],
-        lastManualCommitAt: start,
-      });
-    }
-  }, [duration, isBackendProcessing, isCapturing, isSectionFinishing, isSectionMode, sectionStart]);
-
   const handleToggleSectionMode = useCallback(() => {
-    const canUseRangeMode = regenerateMode === "translate" ? Boolean(song?.timing && segments.length) : Boolean(song?.file);
+    const canUseRangeMode = Boolean(song?.timing && segments.length);
     if (!canUseRangeMode || isCapturing || isSectionFinishing || isReplacingTranslations) return;
     const next = !isSectionMode;
     setIsSectionMode(next);
@@ -2297,12 +2095,12 @@ export function PlayerView() {
     setSectionStart(start);
     sectionStartRef.current = start;
     useStore.setState({
-      scribeMessage: next ? (regenerateMode === "translate" ? "Translation range" : "Section ready") : (song?.timing ? "Synced" : "Ready"),
+      scribeMessage: next ? "Translation range" : (song?.timing ? "Synced" : "Ready"),
       commitFeedback: next ? `${formatClock(start)} / ${formatClock(duration)}` : "",
       manualCommitMarks: [],
       lastManualCommitAt: next ? start : 0,
     });
-  }, [currentTime, duration, isCapturing, isReplacingTranslations, isSectionFinishing, isSectionMode, isTranslationRangePlaying, regenerateMode, seekToTime, segments.length, song?.file, song?.timing]);
+  }, [currentTime, duration, isCapturing, isReplacingTranslations, isSectionFinishing, isSectionMode, isTranslationRangePlaying, seekToTime, segments.length, song?.timing]);
 
   const handleSliderChange = useCallback((value: number) => {
     const safeValue = Math.max(0, Math.min(Number.isFinite(duration) && duration > 0 ? duration : value, value));
@@ -2322,18 +2120,10 @@ export function PlayerView() {
   const handleTransportClick = useCallback(() => {
     if (!song) return;
     if (isSectionMode) {
-      if (regenerateMode === "translate") {
-        if (isTranslationRangePlaying || currentTime > sectionStartRef.current + 0.25) {
-          replaceTranslationsInSelectedRange();
-        } else {
-          startTranslationRangePreview();
-        }
-        return;
-      }
-      if (isSectionCapturing) {
-        finishSectionCapture();
+      if (isTranslationRangePlaying || currentTime > sectionStartRef.current + 0.25) {
+        replaceTranslationsInSelectedRange();
       } else {
-        startSectionCapture();
+        startTranslationRangePreview();
       }
       return;
     }
@@ -2344,7 +2134,7 @@ export function PlayerView() {
     if (!isPlaying) {
       playCurrentSong();
     }
-  }, [currentTime, finishSectionCapture, isPlaying, isSectionCapturing, isSectionMode, isTranslationRangePlaying, playCurrentSong, regenerateMode, replaceTranslationsInSelectedRange, song, startSectionCapture, startTranslationRangePreview]);
+  }, [currentTime, isPlaying, isSectionMode, isTranslationRangePlaying, playCurrentSong, replaceTranslationsInSelectedRange, song, startTranslationRangePreview]);
 
   const handleStageClick = async (event: React.MouseEvent) => {
     if ((event.target as HTMLElement).closest("[data-control]")) return;
@@ -2353,24 +2143,20 @@ export function PlayerView() {
       return;
     }
     if (isSectionFinishing || isBackendProcessing) return;
-    if (isSectionMode && !isSectionCapturing) {
-      if (regenerateMode === "translate") {
-        if (isTranslationRangePlaying || currentTime > sectionStartRef.current + 0.25) {
-          await replaceTranslationsInSelectedRange();
-        } else {
-          await startTranslationRangePreview();
-        }
+    if (isSectionMode) {
+      if (isTranslationRangePlaying || currentTime > sectionStartRef.current + 0.25) {
+        await replaceTranslationsInSelectedRange();
       } else {
-        await startSectionCapture();
+        await startTranslationRangePreview();
       }
       return;
     }
-    if (isCapturing && !showCommitControls) return;
+    if (isCapturing) return;
     if (!isPlaying) {
       await playCurrentSong();
-      return;
+    } else if (song.timing) {
+      getAudioElement().pause();
     }
-    commitHere();
   };
 
   const handleSelectSong = async (songId: string) => {
@@ -2426,13 +2212,14 @@ export function PlayerView() {
     try {
       const importState = useStore.getState();
       const captionLanguage = normalizeLanguage(importState.sourceLanguage);
-      const captionTargetLanguage = importState.translationEnabled ? (importState.targetLanguage.trim() || "en") : "";
+      const captionTargetLanguage = importState.translationEnabled ? (importState.targetLanguage.trim() || getBrowserLanguageCode()) : "";
 
       const result = await downloadYoutubeAudio(video);
       const importedAt = new Date().toISOString();
       const addedSongs = await addAudioFiles([result.file], {
         metadata: {
           source: "youtube",
+          youtubeTitle: result.video.title,
           youtubeVideoId: result.video.videoId,
           youtubeUrl: result.video.url,
           youtubeChannelId: result.video.channelId,
@@ -2440,6 +2227,7 @@ export function PlayerView() {
           youtubeThumbnailUrl: result.video.thumbnailUrl,
           youtubeImportedAt: importedAt,
           youtubePublishedAt: result.video.publishedAt,
+          youtubeDurationSeconds: result.video.durationSeconds,
         },
       });
       const addedSong = addedSongs[0];
@@ -2571,14 +2359,12 @@ export function PlayerView() {
     setLibraryTransferStatus("Clearing local data");
 
     try {
-      sessionRef.current?.close();
-      sessionRef.current = null;
+      scribeAbortRef.current?.abort();
+      scribeAbortRef.current = null;
       activeSongIdRef.current = null;
       activeModeRef.current = null;
       completedSongIdsRef.current.clear();
       failedSongIdsRef.current.clear();
-      commitMarksRef.current = [];
-      lastCommitAtRef.current = 0;
       sectionStartRef.current = 0;
       sectionEndRef.current = NaN;
 
@@ -2601,7 +2387,7 @@ export function PlayerView() {
         segments: [],
         currentSegmentIndex: -1,
         sourceLanguage: "",
-        targetLanguage: "en",
+        targetLanguage: getBrowserLanguageCode(),
         translationEnabled: true,
         allowAutomaticYoutubeCaptions: false,
         scribeStatus: "idle",
@@ -2627,7 +2413,6 @@ export function PlayerView() {
       setIsSectionFinishing(false);
       setIsTranslationRangePlaying(false);
       setIsReplacingTranslations(false);
-      setRegenerateMode("scribe");
       setSectionStart(0);
       setLibraryTransferStatus("Local data cleared");
     } catch (error) {
@@ -2758,7 +2543,6 @@ export function PlayerView() {
         isSectionMode={isSectionMode}
         isSectionFinishing={isSectionFinishing}
         isTranslationRangePlaying={isTranslationRangePlaying}
-        regenerateMode={regenerateMode}
         transcriptSourceSummary={transcriptSourceSummary}
         translationSourceSummary={translationSourceSummary}
         canCommit={canCommit}
@@ -2769,7 +2553,6 @@ export function PlayerView() {
         scribeMessage={statusTitle}
         commitFeedback={statusDetail}
         onSliderChange={handleSliderChange}
-        onRegenerateModeChange={handleRegenerateModeChange}
         onToggleSectionMode={handleToggleSectionMode}
         onTransportClick={handleTransportClick}
       />

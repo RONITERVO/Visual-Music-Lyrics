@@ -5,7 +5,7 @@ import { createId } from "./utils";
 import { useStore } from "./store";
 import { loadSongSegments } from "./fileHandlers";
 
-const SCRIBE_SOURCE = "elevenlabs-scribe-v2-realtime";
+const SCRIBE_SOURCE = "elevenlabs-scribe-v2";
 
 function getTimingSource(text: string, fallback = SCRIBE_SOURCE) {
   try {

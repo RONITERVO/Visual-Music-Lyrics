@@ -8,8 +8,7 @@ The release architecture is Firebase-first:
 Firebase Hosting
   -> static React app
   -> /api/translate, /api/billing, /api/webhooks, /api/entitlements -> Cloud Functions
-  -> /api/youtube -> Cloud Run media service
-  -> live Scribe WebSocket -> direct Cloud Run media origin
+  -> /api/youtube, /api/elevenlabs/scribe -> Cloud Run media service
 
 Firestore
   -> user profile records
@@ -31,8 +30,8 @@ The idea is directionally right, but not as originally phrased:
 
 - Firebase Hosting with same-origin rewrites is the correct default for the web app.
 - Cloud Functions are a good fit for auth-bound control-plane APIs: Gemini translation, entitlement reads, billing session creation, and Stripe webhooks.
-- Cloud Run is the right place for media/data-plane work: `yt-dlp`, caption extraction, streaming downloads, WebSocket Scribe, and `ffmpeg`.
-- Live Scribe WebSockets should connect directly to the Cloud Run media origin with `VITE_MEDIA_WS_BASE_URL`; same-origin Firebase Hosting rewrites are for HTTP APIs.
+- Cloud Run is the right place for media/data-plane work: `yt-dlp`, caption extraction, audio downloads, and batch ElevenLabs Scribe transcription.
+- Scribe uses `POST /api/elevenlabs/scribe` over HTTP. The frontend does not need a websocket media origin.
 - Google Pay is not a billing backend. Use Stripe or another PSP, then enable Google Pay through that provider. This repo uses Stripe because it supports Google Pay for web payment flows and gives reliable webhooks.
 - Do not bill every second as a separate card charge. The MVP sells prepaid ElevenLabs seconds, then meters usage per second internally. The default price is `100` cents per hour with a minimum top-up of `3600` seconds.
 
@@ -91,15 +90,7 @@ gcloud builds submit --config cloudbuild.media.yaml
 
 Set the Cloud Run secrets/env vars from `.env.example`, especially `ELEVENLABS_API_KEY`, YouTube settings, and Firebase Admin service identity access.
 
-The media deployment profile is fixed in [cloudbuild.media.yaml](cloudbuild.media.yaml): `2Gi` memory, `2` CPU, concurrency `4`, max instances `20`, and a `3600` second timeout for live Scribe WebSocket sessions.
-
-Set `VITE_MEDIA_WS_BASE_URL` for the frontend build to the Cloud Run media origin, for example:
-
-```env
-VITE_MEDIA_WS_BASE_URL=https://visual-music-media-abc123-ew.a.run.app
-```
-
-The client converts `https` to `wss` for the WebSocket connection.
+The media deployment profile is fixed in [cloudbuild.media.yaml](cloudbuild.media.yaml): `2Gi` memory, `2` CPU, concurrency `4`, max instances `20`, and a `3600` second request timeout for media jobs.
 
 ## Stripe and Google Pay
 
@@ -119,7 +110,7 @@ The webhook grants prepaid ElevenLabs seconds in Firestore after `payment_intent
 
 ## Operational Signals
 
-Cloud Run and Cloud Functions emit structured production events for request duration, yt-dlp job completion/failure, Scribe second reservation/settlement, Scribe session errors, Gemini translation completion, checkout creation, and Stripe webhook grants. `npm run check:release` fails if those release-critical logging hooks are removed.
+Cloud Run and Cloud Functions emit structured production events for request duration, yt-dlp job completion/failure, Scribe second reservation/settlement, Scribe batch errors, Gemini translation completion, checkout creation, and Stripe webhook grants. `npm run check:release` fails if those release-critical logging hooks are removed.
 
 Create Cloud Logging dashboards and alert policies for high error rates, repeated yt-dlp failures, Scribe entitlement failures, missing webhook grants, and unusual Scribe seconds used.
 
