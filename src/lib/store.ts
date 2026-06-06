@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0 */
 
 import { create } from "zustand";
+import { getBrowserLanguageCode } from "./utils";
 
 export interface GlobalState {
   audioFiles: any[];
@@ -13,7 +14,7 @@ export interface GlobalState {
   targetLanguage: string;
   translationEnabled: boolean;
   allowAutomaticYoutubeCaptions: boolean;
-  scribeStatus: "idle" | "preparing" | "streaming" | "translating" | "saved" | "error";
+  scribeStatus: "idle" | "preparing" | "transcribing" | "translating" | "saved" | "error";
   scribeMessage: string;
   manualCommitMarks: number[];
   lastManualCommitAt: number;
@@ -37,7 +38,7 @@ export const useStore = create<GlobalState>((set) => ({
   segments: [],
   currentSegmentIndex: -1,
   sourceLanguage: "",
-  targetLanguage: "en",
+  targetLanguage: getBrowserLanguageCode(),
   translationEnabled: true,
   allowAutomaticYoutubeCaptions: false,
   scribeStatus: "idle",

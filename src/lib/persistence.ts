@@ -4,6 +4,7 @@
 import { useStore } from "./store";
 import type { GlobalState } from "./store";
 import { clearAllSongsFromDb, getAllSongsFromDb, storeSongInDb } from "./db";
+import { getBrowserLanguageCode } from "./utils";
 
 const SETTINGS_KEYS = {
     sourceLanguage: "living-sketchbook:source-language",
@@ -84,7 +85,7 @@ export function saveSettings(settings = useStore.getState()) {
     try {
         localStorage.setItem(SETTINGS_KEYS.allowAutomaticYoutubeCaptions, settings.allowAutomaticYoutubeCaptions ? "true" : "false");
         localStorage.setItem(SETTINGS_KEYS.sourceLanguage, settings.sourceLanguage || "");
-        localStorage.setItem(SETTINGS_KEYS.targetLanguage, settings.targetLanguage || "en");
+        localStorage.setItem(SETTINGS_KEYS.targetLanguage, settings.targetLanguage || getBrowserLanguageCode());
         localStorage.setItem(SETTINGS_KEYS.translationEnabled, settings.translationEnabled ? "true" : "false");
         for (const key of LEGACY_SECRET_KEYS) localStorage.removeItem(key);
     } catch(e) {}
@@ -112,14 +113,14 @@ export function loadSettings(): PersistedSettings {
     try {
         return {
             sourceLanguage: localStorage.getItem(SETTINGS_KEYS.sourceLanguage) || "",
-            targetLanguage: localStorage.getItem(SETTINGS_KEYS.targetLanguage) || "en",
+            targetLanguage: localStorage.getItem(SETTINGS_KEYS.targetLanguage) || getBrowserLanguageCode(),
             translationEnabled: localStorage.getItem(SETTINGS_KEYS.translationEnabled) !== "false",
             allowAutomaticYoutubeCaptions: localStorage.getItem(SETTINGS_KEYS.allowAutomaticYoutubeCaptions) === "true",
         };
     } catch(e) {
         return {
             sourceLanguage: "",
-            targetLanguage: "en",
+            targetLanguage: getBrowserLanguageCode(),
             translationEnabled: true,
             allowAutomaticYoutubeCaptions: false,
         };

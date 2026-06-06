@@ -4,7 +4,6 @@
 import { getFirebaseIdToken } from './firebase';
 
 const configuredApiBaseUrl = normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
-const configuredWebSocketBaseUrl = normalizeApiBaseUrl(import.meta.env.VITE_MEDIA_WS_BASE_URL);
 const CLIENT_ID_STORAGE_KEY = 'living-sketchbook:client-id';
 
 export interface BackendHealth {
@@ -20,10 +19,6 @@ function normalizeApiBaseUrl(value?: string) {
 
 function normalizeApiPath(path: string) {
   return path.startsWith('/') ? path : `/${path}`;
-}
-
-function isLocalHostname(hostname: string) {
-  return ["localhost", "127.0.0.1", "::1"].includes(hostname);
 }
 
 function resolveApiBaseUrl() {
@@ -74,35 +69,6 @@ export async function getAuthorizedApiRequestHeaders(headers: Record<string, str
   const baseHeaders = getApiRequestHeaders(headers);
   const idToken = await getFirebaseIdToken().catch(() => "");
   return idToken ? { ...baseHeaders, Authorization: `Bearer ${idToken}` } : baseHeaders;
-}
-
-export function buildWebSocketUrl(path: string) {
-  const normalizedPath = normalizeApiPath(path);
-  if (
-    normalizedPath.startsWith("/api/elevenlabs/") &&
-    !configuredWebSocketBaseUrl &&
-    import.meta.env.PROD &&
-    typeof window !== "undefined" &&
-    !isLocalHostname(window.location.hostname)
-  ) {
-    throw new Error("Set VITE_MEDIA_WS_BASE_URL to the Cloud Run media origin before using Scribe in production.");
-  }
-
-  const apiBaseUrl = configuredWebSocketBaseUrl || resolveApiBaseUrl();
-
-  if (!apiBaseUrl) {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${protocol}//${window.location.host}${normalizedPath}`;
-  }
-
-  const url = new URL(normalizedPath.slice(1), `${apiBaseUrl}/`);
-  if (url.protocol === 'https:' || url.protocol === 'wss:') {
-    url.protocol = 'wss:';
-  } else if (url.protocol === 'http:' || url.protocol === 'ws:') {
-    url.protocol = 'ws:';
-  }
-
-  return url.toString();
 }
 
 export async function fetchBackendHealth(signal?: AbortSignal): Promise<BackendHealth> {

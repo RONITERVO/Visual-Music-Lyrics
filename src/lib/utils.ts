@@ -5,6 +5,12 @@ export function getExtension(name: string) { const match = /\.([^.]+)$/.exec(nam
 export function getBaseName(name: string) { return (name || "").replace(/\.[^.]+$/, ""); }
 export function cleanTitle(name: string) { return getBaseName(name || "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim() || "Untitled"; }
 export function normalizeName(name: string) { return cleanTitle(name).toLowerCase().replace(/[^a-z0-9]+/g, ""); }
+export function getBrowserLanguageCode() {
+  if (typeof navigator === "undefined") return "en";
+  const language = (navigator.languages?.[0] || navigator.language || "en").trim().toLowerCase();
+  const primary = language.split("-")[0].replace(/[^a-z]/g, "");
+  return primary || "en";
+}
 export function createId(prefix: string) { return `${prefix}-${Math.random().toString(36).slice(2, 9)}-${Date.now().toString(36)}`; }
 export function clamp(value: number, min: number, max: number) { return Math.min(max, Math.max(min, value)); }
 export function easeOutCubic(value: number) { return 1 - Math.pow(1 - value, 3); }
