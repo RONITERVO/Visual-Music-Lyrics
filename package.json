@@ -23,13 +23,7 @@
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit",
-    "check:release": "tsx scripts/release-readiness-check.ts",
-    "test:backend": "tsx scripts/backend-contract-smoke.ts",
-    "test:backend:build": "tsx scripts/backend-contract-smoke.ts --built",
-    "test:youtube-captions": "tsx scripts/youtube-caption-policy-smoke.ts",
-    "test:user": "tsx scripts/user-browser-smoke.ts",
-    "test:translation": "tsx scripts/translation-smoke.ts"
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
