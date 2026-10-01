@@ -113,6 +113,9 @@ export default function App() {
   const [authReady, setAuthReady] = useState(!authEnabled);
   const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
   const [authError, setAuthError] = useState("");
+  const [isAuthBypassed, setIsAuthBypassed] = useState(() => {
+    return typeof window !== "undefined" && window.localStorage.getItem("local_auth_bypass") === "true";
+  });
   const [isDragging, setIsDragging] = useState(false);
   const [backendWarmState, setBackendWarmState] = useState<"warming" | "ready" | "error">(
     backendSessionEnabled ? "warming" : "ready"
@@ -122,7 +125,7 @@ export default function App() {
   );
   const [backendWarmNonce, setBackendWarmNonce] = useState(0);
   const canAcceptDropsRef = useRef(!backendSessionEnabled);
-  const isAuthBlocked = authEnabled && (!authReady || !authUser);
+  const isAuthBlocked = authEnabled && !isAuthBypassed && (!authReady || !authUser);
 
   useEffect(() => {
     canAcceptDropsRef.current = (!backendSessionEnabled || backendWarmState === "ready") && !isAuthBlocked;
@@ -150,6 +153,10 @@ export default function App() {
 
   const handleSignOut = async () => {
     setAuthError("");
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem("local_auth_bypass");
+    }
+    setIsAuthBypassed(false);
     try {
       await signOutFirebase();
     } catch (error: any) {
@@ -368,7 +375,7 @@ export default function App() {
             </span>
             <button
               type="button"
-              className="mx-auto inline-flex items-center justify-center gap-2 rounded-[8px] bg-ink-blueprint px-4 py-2 font-body text-[0.96rem] text-paper-light transition hover:bg-ink-blueprint/90"
+              className="mx-auto inline-flex items-center justify-center gap-2 rounded-[8px] bg-ink-blueprint px-4 py-2 font-body text-[0.96rem] text-paper-light shadow-md transition hover:bg-ink-blueprint/90 active:scale-95"
               onClick={handleSignIn}
               disabled={!authReady}
             >
@@ -380,6 +387,23 @@ export default function App() {
                 {authError}
               </span>
             )}
+            <div className="flex flex-col items-center gap-1 border-t border-ink-graphite/10 pt-3">
+              <button
+                type="button"
+                className="font-body text-[0.88rem] font-bold text-ink-blueprint underline transition hover:text-ink-graphite active:scale-95"
+                onClick={() => {
+                  if (typeof window !== "undefined") {
+                    window.localStorage.setItem("local_auth_bypass", "true");
+                  }
+                  setIsAuthBypassed(true);
+                }}
+              >
+                Continue in Local / Offline Mode
+              </button>
+              <span className="font-body text-[0.78rem] text-ink-graphite/50">
+                Play local songs, drag & drop media & visual lyrics without sign-in.
+              </span>
+            </div>
           </div>
         </div>
       )}
