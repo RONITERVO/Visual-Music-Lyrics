@@ -27,7 +27,7 @@ function resolveApiBaseUrl() {
 }
 
 export function shouldUseHostedBackend() {
-  if (import.meta.env.VITE_DISABLE_FIREBASE_AUTH === "true") {
+  if (import.meta.env.DEV && import.meta.env.VITE_DISABLE_FIREBASE_AUTH === "true") {
     return false;
   }
   if (typeof window !== "undefined" && window.localStorage.getItem("local_auth_bypass") === "true") {

@@ -51,6 +51,9 @@ export interface Segment {
   role: string;
   kind?: string;
   words: any[];
+  translationWords?: MusicLyricWord[];
+  translationTiming?: "sung";
+  timingQuality?: string;
   characterTimeline?: any[];
   order: number;
   source?: string;

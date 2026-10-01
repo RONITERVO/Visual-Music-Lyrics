@@ -5,14 +5,20 @@ import { useStore, GlobalState } from "./store";
 import { AUDIO_EXTENSIONS, TRANSCRIPT_EXTENSIONS } from "./fileSystem";
 import { getExtension, getBaseName, getAudioMimeType, getFileRelativePath, getTopFolderName, createId, getSongFileKey } from "./utils";
 import { parseTranscript } from "./parser";
+import { importLocalSuno } from "./localSuno";
 
-export async function handleGlobalDroppedFiles(files: File[]) {
+export async function handleGlobalDroppedFiles(files: File[], signal?: AbortSignal) {
     const audioFiles: File[] = [];
     const transcriptFiles: File[] = [];
 
     for (const file of files) {
         const ext = getExtension(file.name);
-        if (AUDIO_EXTENSIONS.has(ext) || file.type.startsWith("audio/")) {
+        if (file.type.startsWith("video/") || ["mp4", "mkv", "mov"].includes(ext)) {
+            useStore.setState({ commitFeedback: `Extracting audio and bilingual lyrics from ${file.name}…` });
+            const imported = await importLocalSuno(file, signal);
+            audioFiles.push(imported.audio);
+            transcriptFiles.push(imported.timing);
+        } else if (AUDIO_EXTENSIONS.has(ext) || file.type.startsWith("audio/")) {
             audioFiles.push(file);
         } else if (TRANSCRIPT_EXTENSIONS.has(ext)) {
             transcriptFiles.push(file);

@@ -248,7 +248,7 @@ export function measureLyricLayout(
   const canvasBounds = canvas.getBoundingClientRect();
   const primaryBounds = relativeBounds(primary?.getBoundingClientRect(), canvasBounds);
   const translationBounds = relativeBounds(translation?.getBoundingClientRect(), canvasBounds);
-  const activeWordBounds = relativeBounds(primary?.querySelector("button.active")?.getBoundingClientRect(), canvasBounds);
+  const activeWordBounds = relativeBounds((primary?.querySelector("button.active") ?? translation?.querySelector("button.active"))?.getBoundingClientRect(), canvasBounds);
   return {
     horizon: primaryBounds?.bottom ? primaryBounds.bottom + 7 : canvasBounds.height * 0.56,
     primary: primaryBounds,

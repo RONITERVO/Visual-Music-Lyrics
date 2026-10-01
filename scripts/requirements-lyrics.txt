@@ -1,0 +1,6 @@
+# Python 3.11-3.13. Install an appropriate PyTorch CUDA wheel separately for GPU use.
+rapidocr==3.9.2
+onnxruntime==1.30.0
+numpy>=2.0,<2.4
+av==18.0.0
+openai-whisper==20250625

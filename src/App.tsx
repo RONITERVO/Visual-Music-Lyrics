@@ -1,7 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 Roni Tervo
  * SPDX-License-Identifier: Apache-2.0 */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { LogIn, LogOut } from "lucide-react";
 import { GraphiteDesignSystem } from "./lib/graphics/GraphiteEngine";
 import { useStore } from "./lib/store";
@@ -125,7 +125,35 @@ export default function App() {
   );
   const [backendWarmNonce, setBackendWarmNonce] = useState(0);
   const canAcceptDropsRef = useRef(true);
+  const mediaInputRef = useRef<HTMLInputElement>(null);
+  const mediaAbortRef = useRef<AbortController | null>(null);
+  const [mediaImportMessage, setMediaImportMessage] = useState("");
+  const [mediaImportBusy, setMediaImportBusy] = useState(false);
   const isAuthBlocked = authEnabled && !isAuthBypassed && (!authReady || !authUser);
+
+  const importMedia = useCallback(async (files: File[]) => {
+    if (!files.length || mediaAbortRef.current || !canAcceptDropsRef.current) return;
+    const controller = new AbortController();
+    mediaAbortRef.current = controller;
+    setMediaImportBusy(true);
+    const hasVideo = files.some(file => file.type.startsWith("video/") || /\.(mp4|mkv|mov)$/i.test(file.name));
+    setMediaImportMessage(hasVideo ? "Extracting audio and aligning Spanish / English lyrics locally. This can take several minutes." : "Adding songs and lyrics…");
+    try {
+      const result = await handleGlobalDroppedFiles(files, controller.signal);
+      const first = result.addedSongs.find((song: any) => song.file && song.url);
+      const state = useStore.getState();
+      const id = first?.id || state.selectedAudioId || state.audioFiles[0]?.id;
+      if (id) await loadSongSegments(id);
+      setMediaImportMessage(hasVideo
+        ? "Audio and bilingual lyrics added. Review the machine-aligned text and timing before publishing."
+        : result.audioFiles.length || result.transcriptFiles.length ? "Files added." : "Choose audio, a Suno video, or a timing JSON, LRC, SRT or VTT file.");
+    } catch (error) {
+      setMediaImportMessage(controller.signal.aborted ? "Import canceled." : getBackendErrorMessage(error));
+    } finally {
+      mediaAbortRef.current = null;
+      setMediaImportBusy(false);
+    }
+  }, []);
 
   useEffect(() => {
     canAcceptDropsRef.current = !isAuthBlocked;
@@ -281,17 +309,7 @@ export default function App() {
       
       if (!e.dataTransfer) return;
       const files = await getDroppedFiles(e.dataTransfer);
-      const result = await handleGlobalDroppedFiles(files);
-      const firstPlayable = result.addedSongs.find((song: any) => song.file && song.url);
-      if (firstPlayable) {
-        await loadSongSegments(firstPlayable.id);
-      } else {
-        const state = useStore.getState();
-        const activeId = state.selectedAudioId || (state.audioFiles.length > 0 ? state.audioFiles[0].id : null);
-        if (activeId) {
-          await loadSongSegments(activeId);
-        }
-      }
+      await importMedia(files);
     };
 
     window.addEventListener("dragenter", handleDragEnter);
@@ -300,6 +318,7 @@ export default function App() {
     window.addEventListener("drop", handleDrop);
 
     return () => {
+      mediaAbortRef.current?.abort();
       unsub();
       engine.destroy();
       window.removeEventListener("dragenter", handleDragEnter);
@@ -312,6 +331,20 @@ export default function App() {
   return (
     <>
       <PlayerView />
+      {!isAuthBlocked && <>
+        <button className="media-picker" type="button" disabled={mediaImportBusy} onClick={() => mediaInputRef.current?.click()}>
+          {mediaImportBusy ? "Importing…" : "Add songs"}
+        </button>
+        <input ref={mediaInputRef} hidden type="file" multiple aria-label="Add audio, Suno video or lyric timing files"
+          accept="audio/*,video/mp4,video/webm,.mkv,.mov,.json,.lrc,.srt,.vtt,.txt"
+          onChange={event => { const files = Array.from(event.currentTarget.files || []); event.currentTarget.value = ""; void importMedia(files); }} />
+      </>}
+      {mediaImportMessage && <div role="status" className="media-import-status">
+        {mediaImportMessage}
+        <button type="button" onClick={() => mediaImportBusy ? mediaAbortRef.current?.abort() : setMediaImportMessage("")}>
+          {mediaImportBusy ? "Cancel" : "Dismiss"}
+        </button>
+      </div>}
 
       {authEnabled && authReady && authUser && (
         <div className="fixed right-3 top-3 z-[90] flex max-w-[min(420px,calc(100vw-1.5rem))] items-center gap-2 rounded-[8px] border border-ink-graphite/15 bg-paper-light/95 px-3 py-2 text-ink-graphite shadow-lg backdrop-blur-md">

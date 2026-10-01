@@ -107,7 +107,8 @@ function parseJsonTranscript(text: string): { kind: "timed", title?: string, seg
           let words: any[] = [];
           if (Array.isArray(item.words)) {
               words = item.words.map((w: any) => ({
-                  word: String(w.word ?? w.text ?? ""),
+                  value: String(w.value ?? w.word ?? w.text ?? "").trim(),
+                  word: String(w.value ?? w.word ?? w.text ?? "").trim(),
                   start: Number(w.start ?? w.startTime ?? w.t0),
                   end: Number(w.end ?? w.endTime ?? w.t1),
                   probability: Number(w.probability ?? w.confidence ?? 1)
@@ -128,6 +129,9 @@ function parseJsonTranscript(text: string): { kind: "timed", title?: string, seg
             role: item.role || item.kind || "lyric",
             kind: item.kind || item.role || "lyric",
             words,
+            translationWords: normalizeWords(item.translationWords),
+            translationTiming: item.translationTiming === "sung" ? "sung" : undefined,
+            timingQuality: item.timingQuality,
             characterTimeline: Array.isArray(item.characterTimeline) ? item.characterTimeline : [],
             order: item.order ?? index,
             source: item.source || data.source || data.transcriptionSource || "imported",
@@ -185,7 +189,10 @@ function normalizeSegments(rawSegments: any[]): Segment[] {
             section: seg.section || "",
             role: seg.role || seg.kind || "lyric",
             kind: seg.kind || seg.role || "lyric",
-            words: Array.isArray(seg.words) ? seg.words : [],
+            words: normalizeWords(seg.words),
+            translationWords: normalizeWords(seg.translationWords),
+            translationTiming: seg.translationTiming,
+            timingQuality: seg.timingQuality,
             characterTimeline: Array.isArray(seg.characterTimeline) ? seg.characterTimeline : [],
             order: seg.order ?? i,
             source: seg.source || "",
@@ -234,6 +241,18 @@ function normalizeSegments(rawSegments: any[]): Segment[] {
       }
     }
     return mergedSegments;
+}
+
+export function normalizeWords(input: unknown) {
+    if (!Array.isArray(input)) return [];
+    return input.map((word) => ({
+        ...word,
+        value: String(word.value ?? word.word ?? word.text ?? "").trim(),
+        start: Number(word.start),
+        end: Number(word.end),
+    })).filter((word) => word.value && Number.isFinite(word.start) &&
+        Number.isFinite(word.end) && word.start >= 0 && word.end > word.start)
+        .sort((a, b) => a.start - b.start);
 }
 
 export function splitBilingualText(text: string) {

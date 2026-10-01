@@ -6,6 +6,8 @@ import { Bot, Check, CreditCard, Download, Loader2, Music2, Palette, Pause, Play
 import { useStore } from "../lib/store";
 import { cleanTitle, formatBytes, formatClock, formatPreciseClock, getBrowserLanguageCode } from "../lib/utils";
 import { addAudioFiles, loadSongSegments } from "../lib/fileHandlers";
+import { normalizeWords } from "../lib/parser";
+import { shouldUseHostedBackend } from "../lib/api";
 import { MusicLyricReactivity, applyMusicLyricFrameStyles, measureLyricLayout, type MusicLyricLayout, type MusicLyricBounds } from "../lib/graphics/MusicLyricReactivity";
 import { createMusicLyricVisualizer, MUSIC_LYRIC_THEMES, type MusicLyricRenderer, type MusicLyricTheme } from "../lib/graphics/MusicLyricVisualizers";
 import { musicLyricSegmentAt, musicLyricDisplaySegmentAt, wordProgress } from "../lib/graphics/MusicLyricsTiming";
@@ -91,9 +93,13 @@ function formatBalanceSeconds(seconds: number) {
   return `${minutes}m`;
 }
 
-function renderTimedWords(segment: Segment, currentTime: number, onSeek: (seconds: number) => void) {
-  if (!segment.words?.length) return renderProgressiveText(segment.primary, segment.start, segment.end, currentTime);
-  return segment.words.map((word, index) => {
+function renderTimedWords(segment: Segment, currentTime: number, onSeek: (seconds: number) => void, translation = false) {
+  const words = normalizeWords(translation ? segment.translationWords : segment.words);
+  const text = translation ? segment.translation || segment.secondary : segment.primary;
+  if (!words.length) return translation && segment.translationTiming === "sung"
+    ? <span className="music-lyrics-word-ghost">{text}</span>
+    : renderProgressiveText(text, segment.start, segment.end, currentTime);
+  return words.map((word, index) => {
     const written = currentTime >= word.start;
     const active = currentTime >= word.start && currentTime < word.end;
     const progress = wordProgress(word.start, word.end, currentTime);
@@ -116,7 +122,7 @@ function renderTimedWords(segment: Segment, currentTime: number, onSeek: (second
           <span className="music-lyrics-word-ghost">{word.value}</span>
           <span className="music-lyrics-word-ink" aria-hidden="true">{word.value}</span>
         </button>
-        {index < (segment.words?.length ?? 0) - 1 ? " " : ""}
+        {index < words.length - 1 ? " " : ""}
       </span>
     );
   });
@@ -851,7 +857,8 @@ function SearchOverlay({
     return (
       <button
         type="button"
-        className="fixed right-3 top-3 z-50 grid h-8 w-8 place-items-center rounded-full border-none bg-transparent text-ink-graphite/70 transition hover:text-ink-blueprint active:scale-95 sm:right-5 sm:top-[58px] sm:h-10 sm:w-10"
+        className="fixed right-3 top-3 z-50 grid h-11 w-11 place-items-center rounded-full border-none bg-transparent text-ink-graphite/70 transition hover:text-ink-blueprint active:scale-95"
+        aria-label="Open library and playback controls"
         data-control="true"
         onClick={(event) => {
           event.stopPropagation();
@@ -1606,8 +1613,8 @@ export function PlayerView() {
   const translationSourceSummary = useMemo(() => getTranslationSourceSummary(segments, timingData), [segments, timingData]);
   const currentSegment = currentSegmentIndex >= 0 ? segments[currentSegmentIndex] : null;
   const activeSegment = musicLyricSegmentAt(segments, currentTime);
-  const displaySegment = musicLyricDisplaySegmentAt(segments, currentTime) || currentSegment;
-  const cueExiting = Boolean(displaySegment && activeSegment && displaySegment !== activeSegment);
+  const displaySegment = musicLyricDisplaySegmentAt(segments, currentTime);
+  const cueExiting = Boolean(displaySegment && !activeSegment);
   const isCapturing = Boolean(song && activeSongIdRef.current === song.id && scribeStatus !== "saved" && scribeStatus !== "error");
   const isSectionCapturing = false;
   const nextCommitAt = lastManualCommitAt > 0 ? lastManualCommitAt + MIN_COMMIT_SEGMENT_SECONDS : MIN_COMMIT_SEGMENT_SECONDS;
@@ -1754,6 +1761,7 @@ export function PlayerView() {
           return;
         }
         visualizer = created;
+        canvas.dataset.theme = theme;
         const reactivity = new MusicLyricReactivity();
         let layout = measureLyricLayout(canvas, primaryRef.current, translationRef.current);
         let lastLayoutAt = 0;
@@ -1796,9 +1804,15 @@ export function PlayerView() {
     return () => {
       disposed = true;
       cancelAnimationFrame(frame);
+      delete canvas.dataset.theme;
       visualizer?.destroy?.();
     };
   }, [theme, song?.id, duration]);
+
+  useEffect(() => {
+    document.documentElement.dataset.visualizerTheme = theme;
+    return () => { delete document.documentElement.dataset.visualizerTheme; };
+  }, [theme]);
 
   useEffect(() => {
     const audioEl = getAudioElement();
@@ -1833,6 +1847,7 @@ export function PlayerView() {
 
   useEffect(() => {
     let index = -1;
+    // timeupdate is too sparse for short syllables; use the actual media clock.
     const grace = 0.08;
     for (let i = 0; i < segments.length; i += 1) {
       const seg = segments[i];
@@ -1845,6 +1860,23 @@ export function PlayerView() {
       useStore.setState({ currentSegmentIndex: index });
     }
   }, [currentTime, segments, currentSegmentIndex]);
+
+  useEffect(() => {
+    if (!isPlaying) return;
+    let frame = 0;
+    let lastUpdate = 0;
+    const tick = (now: number) => {
+      if (now - lastUpdate >= 1000 / 30) {
+        const seconds = getAudioElement().currentTime;
+        currentTimeRef.current = seconds;
+        setCurrentTime(seconds);
+        lastUpdate = now;
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [isPlaying]);
 
   const ensureAudioGraph = useCallback(async (audioEl: HTMLAudioElement) => {
     let { audioContext, analyser, dataFrequency, dataTime, sourceNode } = useStore.getState();
@@ -2095,6 +2127,7 @@ export function PlayerView() {
     }
 
     if (completedSongIdsRef.current.has(song.id) || failedSongIdsRef.current.has(song.id)) return;
+    if (!shouldUseHostedBackend()) return;
     void startScribe();
   }, [isPlaying, isSectionMode, sectionStart, song?.id, song?.file, song?.timing, startScribe]);
 
@@ -2683,7 +2716,7 @@ export function PlayerView() {
       />
 
       {/* Theme Switcher Button */}
-      <div className="fixed right-4 top-4 z-40 flex items-center gap-2" data-control="true">
+      <div className="theme-picker fixed right-4 top-4 z-40 flex items-center gap-2" data-control="true">
         <button
           type="button"
           className={`flex items-center gap-2 rounded-full px-4 py-1.5 font-display text-[0.88rem] font-bold shadow-md backdrop-blur-md transition active:scale-95 ${
@@ -2708,7 +2741,7 @@ export function PlayerView() {
       <div
         ref={stageContainerRef}
         className={`stage-shell grid h-[100svh] w-full place-items-stretch transition-colors duration-500 ${
-          theme === "signal-bloom" ? "theme-signal-bloom bg-[#08090c]" : "bg-[#f4eee1]"
+          theme === "signal-bloom" ? "theme-signal-bloom bg-[#08090c]" : "theme-sketchbook bg-[#f4eee1]"
         }`}
         aria-label="Visualizer stage"
       >
@@ -2716,11 +2749,7 @@ export function PlayerView() {
           <canvas id="visualizer-canvas" className="absolute inset-0 z-[2] h-full w-full"></canvas>
 
           <div
-            className="stage-meta pointer-events-none absolute top-[30px] z-10 flex justify-between gap-4 opacity-45 mix-blend-multiply transition-opacity"
-            style={{
-              left: "calc(max(50px, 4vw) + max(24px, 5vw))",
-              right: "max(24px, 5vw)",
-            }}
+            className="stage-meta pointer-events-none absolute z-10 flex justify-between gap-4 opacity-45 transition-opacity"
           >
             <span className="max-w-[55%] truncate font-display text-[clamp(1.4rem,4vw,2rem)] text-ink-graphite">
               {song?.name || (theme === "signal-bloom" ? "Signal Bloom" : "Living Sketchbook")}
@@ -2732,22 +2761,16 @@ export function PlayerView() {
 
           <div
             className="lyric-wrap pointer-events-none absolute z-20 flex flex-col items-center text-center"
-            style={{
-              perspective: "1000px",
-              top: "38vh",
-              left: "calc(max(50px, 4vw) + max(24px, 5vw))",
-              right: "max(24px, 5vw)",
-            }}
           >
             {displaySegment ? (
-              <div className={`music-lyrics-cue ${cueExiting ? "exiting" : ""}`}>
-                <div ref={primaryRef} className="music-lyrics-primary pointer-events-auto">
+              <div key={displaySegment.id} className={`music-lyrics-cue ${cueExiting ? "exiting" : ""}`}>
+                <div ref={primaryRef} lang={displaySegment.language_code || undefined} className="music-lyrics-primary pointer-events-auto">
                   {renderTimedWords(displaySegment, currentTime, seekToTime)}
                 </div>
 
                 {displaySegment.translation || displaySegment.secondary ? (
-                  <div ref={translationRef} className="music-lyrics-translation pointer-events-none">
-                    {displaySegment.translation || displaySegment.secondary}
+                  <div ref={translationRef} lang={displaySegment.translationTiming === "sung" ? "en" : undefined} className={`music-lyrics-translation pointer-events-auto ${displaySegment.translationTiming === "sung" ? "sung-translation" : ""}`}>
+                    {renderTimedWords(displaySegment, currentTime, seekToTime, true)}
                   </div>
                 ) : null}
               </div>
