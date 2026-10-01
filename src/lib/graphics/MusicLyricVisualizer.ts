@@ -225,6 +225,10 @@ export class SketchbookMusicLyricVisualizer {
       }
       context.lineTo(width, horizon);
       context.closePath();
+      // Opaque paper masks the sun and its rays before the translucent mountain wash.
+      context.globalCompositeOperation = "source-over";
+      context.fillStyle = "#f4eee1";
+      context.fill();
       context.globalCompositeOperation = "multiply";
       context.fillStyle = layer === 0
         ? `rgba(78,88,91,${0.08 + frame.lowMid * 0.05})`
@@ -261,6 +265,10 @@ export class SketchbookMusicLyricVisualizer {
     frame: MusicLyricFrame,
   ) {
     context.save();
+    // Keep oversized sun rays behind the water too; its reflection is drawn below.
+    context.globalCompositeOperation = "source-over";
+    context.fillStyle = "#f4eee1";
+    context.fillRect(0, horizon, width, height - horizon);
     context.globalCompositeOperation = "multiply";
     const wash = context.createLinearGradient(0, horizon, 0, height);
     wash.addColorStop(0, `rgba(110,140,160,${0.19 + frame.lowMid * 0.08})`);
