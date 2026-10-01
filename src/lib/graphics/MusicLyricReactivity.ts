@@ -183,6 +183,7 @@ export class MusicLyricReactivity {
 }
 
 export function applyMusicLyricFrameStyles(element: HTMLElement, frame: MusicLyricFrame) {
+  element.style.setProperty("--lyric-waterline", `${frame.layout.horizon.toFixed(2)}px`);
   element.style.setProperty("--lyric-energy", frame.energy.toFixed(4));
   element.style.setProperty("--lyric-bass", frame.bass.toFixed(4));
   element.style.setProperty("--lyric-presence", frame.presence.toFixed(4));
@@ -250,9 +251,15 @@ export function measureLyricLayout(
   const translationBounds = relativeBounds(translation?.getBoundingClientRect(), canvasBounds);
   const activeWordBounds = relativeBounds((primary?.querySelector("button.active") ?? translation?.querySelector("button.active"))?.getBoundingClientRect(), canvasBounds);
   return {
-    horizon: primaryBounds?.bottom ? primaryBounds.bottom + 7 : canvasBounds.height * 0.56,
+    horizon: resolveSketchbookHorizon(primaryBounds ? primaryBounds.bottom + 7 : undefined, canvasBounds.height),
     primary: primaryBounds,
     translation: translationBounds,
     activeWord: activeWordBounds,
   };
+}
+
+/** The canvas and DOM reflection must use the same clamped water surface. */
+export function resolveSketchbookHorizon(horizon: number | undefined, height: number): number {
+  const requested = horizon && Number.isFinite(horizon) ? horizon : height * 0.56;
+  return Math.max(height * 0.47, Math.min(height * 0.69, requested));
 }

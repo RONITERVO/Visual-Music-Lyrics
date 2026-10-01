@@ -6,7 +6,7 @@
  * deterministic reactivity frame instead of unbounded frame-rate-dependent randomness.
  */
 
-import type { MusicLyricBounds, MusicLyricFrame } from "./MusicLyricReactivity";
+import { resolveSketchbookHorizon, type MusicLyricBounds, type MusicLyricFrame } from "./MusicLyricReactivity";
 
 interface RainDrop {
   x: number;
@@ -70,7 +70,7 @@ export class SketchbookMusicLyricVisualizer {
     const ratio = lyricPixelRatio();
     const width = this.canvas.width / ratio;
     const height = this.canvas.height / ratio;
-    const horizon = clamp(frame.layout.horizon || height * 0.56, height * 0.47, height * 0.69);
+    const horizon = resolveSketchbookHorizon(frame.layout.horizon, height);
     const sunX = width * (0.3 + frame.progress * 0.4);
     const sunY = horizon - height * (0.245 + frame.energy * 0.035);
     this.scrollX += frame.delta * (17 + frame.energy * 58 + frame.lowMid * 28);
@@ -570,10 +570,6 @@ function pointInside(x: number, y: number, bounds: MusicLyricBounds): boolean {
 function pseudoRandom(seed: number): number {
   const value = Math.sin(seed * 12.9898) * 43_758.5453;
   return value - Math.floor(value);
-}
-
-function clamp(value: number, minimum: number, maximum: number): number {
-  return Math.max(minimum, Math.min(maximum, value));
 }
 
 function lyricPixelRatio(): number {

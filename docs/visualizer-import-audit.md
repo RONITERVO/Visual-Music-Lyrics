@@ -8,14 +8,14 @@ Compared against the local Kestrel checkout at `D:\Projects\Local-LLM-only-best-
 
 | Area | Evidence |
 | --- | --- |
-| Living Sketchbook canvas engine | Exact source match, including bounded rain, wildlife and deterministic visual events. |
+| Living Sketchbook canvas engine | Kestrel drawing and event algorithms retained; its existing horizon clamp is now shared with the DOM reflection layout. |
 | Signal Bloom canvas engine | Exact source match, including trails, sparks, pulses and audio-driven focus. |
 | Audio-reactivity core | Same Kestrel algorithm; additions only measure this app's lyric elements. FFT 1024, smoothing 0.68, -92/-12 dB limits match. |
 | Integration before fixes | Imported `word`/`text` fields did not match the renderer's `value`; English was static; playback used sparse `timeupdate`; Signal Bloom inherited multiply compositing; cue exit was unreachable. |
 | Integration after fixes | Normalized word contracts, independent sung-English timeline, 30 Hz media-clock updates, theme-specific compositing, English active-word focus, functioning cue exit. Signal Bloom keeps Kestrel's serif reading face; Living Sketchbook restores main-branch Caveat handwriting, graphite words, pencil reveal/erase and the blue water-reflection translation. Sketchbook uses multiply blending for its original warm paper colors; Signal Bloom uses normal blending. |
 | Phone adaptation | Smaller type, wrapping, narrower notebook margin, separated header controls, independently timed sung-English row, file picker. Composition naturally differs from Kestrel's desktop aspect ratio. |
 
-The two rendering modules are exact copies; that is not a percentage estimate of the entire user experience. No physical Android/iPhone GPU or audio-route comparison was performed.
+Signal Bloom's rendering module is an exact copy. Sketchbook's drawing logic is retained, with horizon resolution factored into a shared helper so the water and reflected lyrics agree. This is not a percentage estimate of the entire user experience. No physical Android/iPhone GPU or audio-route comparison was performed.
 
 Caveat and Patrick Hand are bundled locally with their SIL Open Font licenses, so the original handwriting does not depend on Google Fonts being reachable.
 
@@ -24,6 +24,7 @@ Caveat and Patrick Hand are bundled locally with their SIL Open Font licenses, s
 - TypeScript, frontend build, media-server bundle, and Cloud Functions compilation.
 - Five Node regressions covering word imports, bilingual timing, malformed timing, audio transients/silence, English visual focus, and local import isolation (some checks share a test).
 - Five Edge browser scenarios: 320×568, 390×844, 430×932, 844×390, 1280×720. Both themes, Spanish then English, seek boundaries, live AudioContext and energy decay to silence, IndexedDB restore.
+- Two reflection regressions (normal and reduced motion) compare text position against the actual canvas water fill across short, wrapped and English-only cues, viewport changes, and word seeking. The moving horizon is preserved; the reflection is anchored and clipped to its water region.
 - Three Python regressions: wrapped sentence assembly, conservative audio-assisted word repair, non-overlapping uncertain word timing.
 - Real local HTTP import of `Amor Digital.mp4`: successful response, 198.016-second AAC-only M4A, approximately 4.94 MB; 56 lyric groups and 308 word entries. The audio plus timing files were loaded into the player and displayed at 390×844. No video stream is stored in the generated M4A.
 - Original MP4 is preserved. Request upload copies are temporary and removed after processing. Local import rejects remote peers, foreign origins and non-loopback Host headers; it is unavailable in production.

@@ -510,7 +510,12 @@ html[data-visualizer-theme="signal-bloom"] button[aria-label="Open library and p
   text-decoration: none;
 }
 .theme-sketchbook .music-lyrics-primary button.active::after { display: none; }
-.theme-sketchbook .music-lyrics-cue { perspective: 1000px; }
+.water-reflection .music-lyrics-cue {
+  perspective: 1000px;
+  transform: none;
+  transition: none;
+}
+.water-reflection .music-lyrics-translation { margin-top: 0; }
 .theme-sketchbook .music-lyrics-cue,
 .theme-sketchbook .music-lyrics-cue.exiting { animation: none; }
 .theme-sketchbook .music-lyrics-cue.exiting .music-lyrics-word-ink {
@@ -519,11 +524,18 @@ html[data-visualizer-theme="signal-bloom"] button[aria-label="Open library and p
 }
 
 .stage-meta { top: max(78px, calc(env(safe-area-inset-top) + 68px)); }
-.stage-meta, .lyric-wrap {
+.stage-meta, .lyric-wrap, .water-reflection {
   left: calc(var(--binder-spine-width) + max(24px, 5vw));
   right: max(24px, 5vw);
 }
 .lyric-wrap { top: 37%; perspective: 1000px; }
+/* Anchor outside the lifted lyric cue, to the canvas's moving water surface. */
+.water-reflection {
+  top: var(--lyric-waterline, 56%);
+  bottom: 0;
+  padding-top: 12px;
+  overflow: hidden;
+}
 .theme-picker { right: 64px; top: max(12px, env(safe-area-inset-top)); }
 .media-picker {
   position: fixed; z-index: 60;
@@ -547,7 +559,7 @@ html[data-visualizer-theme="signal-bloom"] button[aria-label="Open library and p
   :root { --binder-spine-width: 22px; }
   .binder-spine { width: 22px; }
   .binder-hole { transform: scale(.6); }
-  .stage-meta, .lyric-wrap { left: 34px; right: 18px; }
+  .stage-meta, .lyric-wrap, .water-reflection { left: 34px; right: 18px; }
   .stage-meta { top: max(74px, calc(env(safe-area-inset-top) + 64px)); }
   .stage-meta > span { font-size: 19px; }
   .music-lyrics-primary { font-size: clamp(25px, 7.2vw, 40px); line-height: 1.14; }

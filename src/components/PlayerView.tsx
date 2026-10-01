@@ -1,7 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 Roni Tervo
  * SPDX-License-Identifier: Apache-2.0 */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Bot, Check, CreditCard, Download, Loader2, Music2, Palette, Pause, Play, RefreshCw, RotateCcw, Search, Settings, Sparkles, Trash2, Upload, X, Youtube } from "lucide-react";
 import { useStore } from "../lib/store";
 import { cleanTitle, formatBytes, formatClock, formatPreciseClock, getBrowserLanguageCode } from "../lib/utils";
@@ -1600,6 +1600,7 @@ export function PlayerView() {
   });
   const primaryRef = useRef<HTMLDivElement>(null);
   const translationRef = useRef<HTMLDivElement>(null);
+  const refreshVisualizerLayoutRef = useRef<(() => void) | null>(null);
   const stageContainerRef = useRef<HTMLDivElement>(null);
   const currentTimeRef = useRef(currentTime);
 
@@ -1753,6 +1754,7 @@ export function PlayerView() {
     let visualizer: MusicLyricRenderer | undefined;
     let disposed = false;
     let frame = 0;
+    let resizeObserver: ResizeObserver | undefined;
 
     void createMusicLyricVisualizer(theme, canvas)
       .then((created) => {
@@ -1764,7 +1766,7 @@ export function PlayerView() {
         canvas.dataset.theme = theme;
         const reactivity = new MusicLyricReactivity();
         let layout = measureLyricLayout(canvas, primaryRef.current, translationRef.current);
-        let lastLayoutAt = 0;
+        let lastLayoutAt = -Infinity;
         const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
         const draw = (now = performance.now()) => {
@@ -1797,6 +1799,15 @@ export function PlayerView() {
           }
         };
 
+        const refreshLayout = () => {
+          cancelAnimationFrame(frame);
+          lastLayoutAt = -Infinity;
+          draw();
+        };
+        refreshVisualizerLayoutRef.current = refreshLayout;
+        resizeObserver = new ResizeObserver(refreshLayout);
+        resizeObserver.observe(canvas);
+        void document.fonts.ready.then(() => { if (!disposed) refreshLayout(); });
         draw();
       })
       .catch(console.error);
@@ -1804,10 +1815,17 @@ export function PlayerView() {
     return () => {
       disposed = true;
       cancelAnimationFrame(frame);
+      resizeObserver?.disconnect();
+      refreshVisualizerLayoutRef.current = null;
       delete canvas.dataset.theme;
       visualizer?.destroy?.();
     };
   }, [theme, song?.id, duration]);
+
+  // A new/empty cue can move the waterline even when reduced motion stops the animation loop.
+  useLayoutEffect(() => {
+    refreshVisualizerLayoutRef.current?.();
+  }, [displaySegment, theme]);
 
   useEffect(() => {
     document.documentElement.dataset.visualizerTheme = theme;
@@ -2654,6 +2672,12 @@ export function PlayerView() {
     });
   };
 
+  const translationLyrics = displaySegment && (displaySegment.translation || displaySegment.secondary) ? (
+    <div ref={translationRef} lang={displaySegment.translationTiming === "sung" ? "en" : undefined} className={`music-lyrics-translation pointer-events-auto ${displaySegment.translationTiming === "sung" ? "sung-translation" : ""}`}>
+      {renderTimedWords(displaySegment, currentTime, seekToTime, true)}
+    </div>
+  ) : null;
+
   return (
     <section
       className="player-view fixed inset-0 z-30 min-h-[100svh] cursor-pointer overflow-hidden bg-transparent"
@@ -2768,11 +2792,7 @@ export function PlayerView() {
                   {renderTimedWords(displaySegment, currentTime, seekToTime)}
                 </div>
 
-                {displaySegment.translation || displaySegment.secondary ? (
-                  <div ref={translationRef} lang={displaySegment.translationTiming === "sung" ? "en" : undefined} className={`music-lyrics-translation pointer-events-auto ${displaySegment.translationTiming === "sung" ? "sung-translation" : ""}`}>
-                    {renderTimedWords(displaySegment, currentTime, seekToTime, true)}
-                  </div>
-                ) : null}
+                {theme === "signal-bloom" ? translationLyrics : null}
               </div>
             ) : (
               <div className="music-lyrics-primary opacity-60">
@@ -2780,6 +2800,13 @@ export function PlayerView() {
               </div>
             )}
           </div>
+          {theme === "sketchbook" && translationLyrics && (
+            <div className="water-reflection pointer-events-none absolute z-20 text-center">
+              <div key={displaySegment!.id} className={`music-lyrics-cue ${cueExiting ? "exiting" : ""}`}>
+                {translationLyrics}
+              </div>
+            </div>
+          )}
         </section>
       </div>
 

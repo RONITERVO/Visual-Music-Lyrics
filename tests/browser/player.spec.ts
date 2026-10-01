@@ -65,3 +65,65 @@ for (const viewport of [{width:320,height:568},{width:390,height:844},{width:430
     expect(errors).toEqual([]);
   });
 }
+
+for (const reducedMotion of ["no-preference", "reduce"] as const) {
+  test(`Sketchbook reflection follows the painted waterline (${reducedMotion})`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion });
+    // Observe the actual canvas water fill, independently of the DOM layout calculation.
+    await page.addInitScript(() => {
+      const fillRect = CanvasRenderingContext2D.prototype.fillRect;
+      CanvasRenderingContext2D.prototype.fillRect = function(x, y, width, height) {
+        if (this.canvas.id === "visualizer-canvas" && x === 0 && y > 0
+          && Math.abs(y + height - this.canvas.getBoundingClientRect().height) < 1) {
+          this.canvas.dataset.drawnWaterline = String(y);
+        }
+        return fillRect.call(this, x, y, width, height);
+      };
+    });
+    await page.goto("/");
+    const segments = [
+      { id: "short", start: 1, end: 3, primary: "Bajo la luna llena", translation: "Under the moon" },
+      { id: "wrapped", start: 3, end: 6, primary: "Caminando por la calle bajo la luna llena seguimos juntos hasta el amanecer", translation: "Walking together until dawn" },
+      { id: "english-only", start: 6, end: 9, primary: "", translation: "Watch me go" },
+    ].map(segment => ({
+      ...segment, language_code: "es", translationTiming: "sung",
+      words: segment.primary.split(" ").filter(Boolean).map((value, index) => ({ value, start: segment.start + index * .05, end: segment.start + (index + 1) * .05 })),
+      translationWords: segment.translation.split(" ").map((value, index) => ({ value, start: segment.start + 1 + index * .1, end: segment.start + 1 + (index + 1) * .1 })),
+    }));
+    await page.getByLabel("Add audio, Suno video or lyric timing files").setInputFiles([
+      { name: "reflection.wav", mimeType: "audio/wav", buffer: tone() },
+      { name: "reflection.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({ segments })) },
+    ]);
+    await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+    await page.evaluate(() => document.fonts.ready);
+    await page.waitForFunction(() => document.querySelector("audio")!.readyState >= 2);
+
+    for (const viewport of [{width:390,height:844},{width:500,height:900},{width:320,height:568},{width:844,height:390}]) {
+      await page.setViewportSize(viewport);
+      const horizons: number[] = [];
+      for (const [index, time] of [2.6, 5.2, 7.8].entries()) {
+        await page.evaluate(time => { const audio = document.querySelector("audio")!; audio.pause(); audio.currentTime = time; }, time);
+        await expect(page.locator(".music-lyrics-primary button")).toHaveCount(segments[index].words.length);
+        await expect.poll(() => page.evaluate(() => {
+          const canvas = document.querySelector<HTMLCanvasElement>("#visualizer-canvas")!;
+          const translation = document.querySelector(".music-lyrics-translation")!;
+          return translation.getBoundingClientRect().top - canvas.getBoundingClientRect().top - Number(canvas.dataset.drawnWaterline);
+        })).toBeGreaterThanOrEqual(6);
+        const geometry = await page.evaluate(() => {
+          const canvas = document.querySelector<HTMLCanvasElement>("#visualizer-canvas")!;
+          const translation = document.querySelector(".music-lyrics-translation")!;
+          return { horizon: Number(canvas.dataset.drawnWaterline), bottom: translation.getBoundingClientRect().bottom };
+        });
+        horizons.push(geometry.horizon);
+        expect(geometry.bottom).toBeLessThan(viewport.height);
+      }
+      // Preserving the changing horizon is part of the fix, not freezing it in place.
+      expect(Math.max(...horizons) - Math.min(...horizons)).toBeGreaterThan(10);
+    }
+    // The ripple deliberately never settles; click its current on-screen position like a user.
+    const word = await page.locator(".water-reflection button").first().boundingBox();
+    expect(word).not.toBeNull();
+    await page.mouse.click(word!.x + word!.width / 2, word!.y + word!.height / 2);
+    await expect.poll(() => page.evaluate(() => document.querySelector("audio")!.currentTime)).toBeCloseTo(7, 1);
+  });
+}
