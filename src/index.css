@@ -342,7 +342,8 @@ button:disabled {
   display: inline-block;
 }
 
-.music-lyrics-primary button {
+.music-lyrics-primary button,
+.music-lyrics-progressive-word {
   position: relative;
   display: inline-grid;
   padding: 0 2px;
@@ -374,13 +375,15 @@ button:disabled {
   will-change: clip-path, transform;
 }
 
-.music-lyrics-primary button.waiting .music-lyrics-word-ink {
+.music-lyrics-primary button.waiting .music-lyrics-word-ink,
+.music-lyrics-progressive-word.waiting .music-lyrics-word-ink {
   opacity: 0;
   filter: blur(3px);
   transform: translateY(3px) rotate(-1deg) scale(0.98);
 }
 
-.music-lyrics-primary button.written {
+.music-lyrics-primary button.written,
+.music-lyrics-progressive-word.written {
   opacity: 1;
 }
 
@@ -449,7 +452,8 @@ button:disabled {
   text-shadow: 0 0 32px rgba(0, 229, 255, 0.35);
 }
 
-.theme-signal-bloom .music-lyrics-primary button.waiting {
+.theme-signal-bloom .music-lyrics-primary button.waiting,
+.theme-signal-bloom .music-lyrics-progressive-word.waiting {
   opacity: 0.22;
 }
 

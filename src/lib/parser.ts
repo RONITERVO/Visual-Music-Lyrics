@@ -120,7 +120,7 @@ function parseJsonTranscript(text: string): { kind: "timed", title?: string, seg
             end: Number.isFinite(end) ? end : NaN,
             text,
             raw: item.raw || text,
-            primary: item.primary || text,
+            primary: item.primary || "",
             translation: item.translation || item.secondary || item.english || "",
             secondary: item.secondary || "",
             speaker: item.speaker || "",
