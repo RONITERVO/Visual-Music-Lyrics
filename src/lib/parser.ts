@@ -18,10 +18,45 @@ export function parseTranscript(text: string, extension: string): { kind: "timed
       return { kind: "timed", segments: parseCueTranscript(trimmed) };
   }
   
+  if (extension === "lrc" || (/^\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]/m.test(trimmed) && !trimmed.includes("-->"))) {
+      return { kind: "timed", segments: parseLrcTranscript(trimmed) };
+  }
+  
   const looseTimed = parseLooseTimedText(trimmed); 
   if (looseTimed.length) return { kind: "timed", segments: normalizeSegments(looseTimed) };
 
   return { kind: "timed", segments: parsePlainText(trimmed) };
+}
+
+function parseLrcTranscript(text: string): Segment[] {
+    const lines = text.replace(/\r/g, "").split("\n");
+    const cues: { start: number; text: string }[] = [];
+    const lrcRegex = /\[(\d{1,2}:\d{2}(?:\.\d{1,3})?)\](.*)/;
+    for (const line of lines) {
+        const match = line.trim().match(lrcRegex);
+        if (match) {
+            const start = parseTimestamp(match[1]);
+            const body = match[2].trim();
+            if (Number.isFinite(start) && body) {
+                cues.push({ start, text: body });
+            }
+        }
+    }
+    cues.sort((a, b) => a.start - b.start);
+    const segments: any[] = [];
+    for (let i = 0; i < cues.length; i++) {
+        const curr = cues[i];
+        const next = cues[i + 1];
+        const end = next ? next.start : curr.start + estimateTextDuration(curr.text);
+        segments.push({
+            start: curr.start,
+            end: Math.max(curr.start + 0.5, end),
+            text: curr.text,
+            raw: curr.text,
+            role: "lyric"
+        });
+    }
+    return normalizeSegments(segments);
 }
 
 function parseCueTranscript(text: string): Segment[] {

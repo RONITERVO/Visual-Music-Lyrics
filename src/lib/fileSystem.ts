@@ -1,8 +1,8 @@
 /* SPDX-FileCopyrightText: 2026 Roni Tervo
  * SPDX-License-Identifier: Apache-2.0 */
 
-export const AUDIO_EXTENSIONS = new Set(["wav", "vaw", "mp3", "m4a", "aac", "flac", "ogg", "webm"]);
-export const TRANSCRIPT_EXTENSIONS = new Set(["json", "vtt", "srt", "txt", "text", "lyrics"]);
+export const AUDIO_EXTENSIONS = new Set(["wav", "vaw", "mp3", "m4a", "aac", "flac", "ogg", "webm", "mp4", "mkv"]);
+export const TRANSCRIPT_EXTENSIONS = new Set(["json", "vtt", "srt", "txt", "text", "lyrics", "lrc"]);
 
 export async function getDroppedFiles(dataTransfer: DataTransfer): Promise<File[]> {
     const items = Array.from(dataTransfer.items || []);
