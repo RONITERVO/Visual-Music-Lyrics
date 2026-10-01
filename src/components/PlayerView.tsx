@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0 */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Check, CreditCard, Download, Eye, EyeOff, Loader2, Music2, Pause, Play, RefreshCw, RotateCcw, Search, Settings, Smartphone, Sparkles, Trash2, Upload, Video, X, Youtube } from "lucide-react";
+import { Bot, Check, CreditCard, Download, Loader2, Music2, Pause, Play, RefreshCw, RotateCcw, Search, Settings, Sparkles, Trash2, Upload, X, Youtube } from "lucide-react";
 import { useStore } from "../lib/store";
 import { cleanTitle, formatBytes, formatClock, formatPreciseClock, getBrowserLanguageCode } from "../lib/utils";
 import { VisualizerEngine } from "../lib/graphics/VisualizerEngine";
@@ -1526,26 +1526,6 @@ export function PlayerView() {
   const [isTranslationRangePlaying, setIsTranslationRangePlaying] = useState(false);
   const [isReplacingTranslations, setIsReplacingTranslations] = useState(false);
   const [sectionStart, setSectionStart] = useState(0);
-  const [isTiktokMode, setIsTiktokMode] = useState(false);
-  const [isCleanCaptureMode, setIsCleanCaptureMode] = useState(false);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
-        return;
-      }
-      if (e.code === "KeyT") {
-        setIsTiktokMode((prev) => !prev);
-      } else if (e.code === "KeyC") {
-        setIsCleanCaptureMode((prev) => !prev);
-      } else if (e.code === "Escape") {
-        setIsCleanCaptureMode(false);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
 
   const song = audioFiles.find((audio) => audio.id === selectedAudioId) || null;
   const timingData = useMemo(() => parseTimingTextCache(song), [song?.timing?.textCache]);
@@ -2585,115 +2565,39 @@ export function PlayerView() {
         onChange={handleImportLibraryFile}
       />
 
-      {/* Floating TikTok & Clean Capture Control Pills */}
-      {!isCleanCaptureMode ? (
-        <div className="fixed right-4 top-4 z-40 flex items-center gap-2" data-control="true">
-          <button
-            type="button"
-            className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 font-display text-[0.82rem] font-bold shadow-md transition active:scale-95 ${
-              isTiktokMode
-                ? "bg-gradient-to-r from-pink-500 to-violet-600 text-white shadow-pink-500/25 ring-2 ring-pink-400"
-                : "border border-ink-blueprint/20 bg-paper-light/90 text-ink-graphite hover:border-ink-blueprint/50 hover:text-ink-blueprint"
-            }`}
-            onClick={() => setIsTiktokMode(!isTiktokMode)}
-            title="Toggle TikTok 9:16 Vertical Capture Mode (Key: T)"
-          >
-            <Smartphone size={14} className={isTiktokMode ? "animate-pulse" : ""} />
-            <span>{isTiktokMode ? "9:16 TikTok" : "TikTok View"}</span>
-          </button>
-
-          <button
-            type="button"
-            className="flex items-center gap-1.5 rounded-full border border-ink-blueprint/20 bg-paper-light/90 px-3 py-1.5 font-display text-[0.82rem] font-bold text-ink-graphite shadow-md transition hover:border-ink-blueprint/50 hover:text-ink-blueprint active:scale-95"
-            onClick={() => setIsCleanCaptureMode(true)}
-            title="Clean Capture Mode for OBS / Screen Recording (Key: C)"
-          >
-            <Video size={14} />
-            <span>Capture (C)</span>
-          </button>
-        </div>
-      ) : (
-        <button
-          type="button"
-          className="fixed right-4 top-4 z-50 flex items-center gap-1.5 rounded-full bg-neutral-900/80 px-3 py-1.5 font-display text-[0.78rem] text-white/70 shadow-lg backdrop-blur-md transition hover:bg-neutral-800 hover:text-white"
-          onClick={() => setIsCleanCaptureMode(false)}
-          data-control="true"
-          title="Exit Capture Mode (Esc or C)"
-        >
-          <EyeOff size={13} />
-          <span>Exit Capture (C)</span>
-        </button>
-      )}
-
-      <div
-        className={`stage-shell grid h-[100svh] w-full place-items-center transition-all duration-300 ${
-          isTiktokMode ? "bg-neutral-950/90 py-3" : "place-items-stretch"
-        }`}
-        aria-label="Visualizer stage"
-      >
-        <section
-          className={`stage pointer-events-none relative transition-all duration-300 ${
-            isTiktokMode
-              ? "aspect-[9/16] h-[95vh] max-h-[920px] w-auto max-w-[520px] rounded-3xl border border-white/15 bg-neutral-950/80 shadow-[0_0_50px_rgba(0,0,0,0.8)] backdrop-blur-md overflow-hidden"
-              : "h-[100svh] w-full"
-          }`}
-          tabIndex={0}
-        >
+      <div className="stage-shell grid h-[100svh] w-full place-items-stretch" aria-label="Visualizer stage">
+        <section className="stage pointer-events-none relative h-[100svh] w-full" tabIndex={0}>
           <canvas id="visualizer-canvas" className="absolute inset-0 z-[2] h-full w-full"></canvas>
 
           <div
-            className={`stage-meta pointer-events-none absolute z-10 flex justify-between gap-4 transition-all ${
-              isTiktokMode
-                ? "left-6 right-6 top-5 opacity-70"
-                : "top-[30px] opacity-45 mix-blend-multiply"
-            }`}
-            style={
-              isTiktokMode
-                ? undefined
-                : {
-                    left: "calc(max(50px, 4vw) + max(24px, 5vw))",
-                    right: "max(24px, 5vw)",
-                  }
-            }
+            className="stage-meta pointer-events-none absolute top-[30px] z-10 flex justify-between gap-4 opacity-45 mix-blend-multiply"
+            style={{
+              left: "calc(max(50px, 4vw) + max(24px, 5vw))",
+              right: "max(24px, 5vw)",
+            }}
           >
-            <span
-              className={`truncate font-display text-ink-graphite ${
-                isTiktokMode ? "max-w-[70%] text-[1.1rem] font-bold" : "max-w-[55%] text-[clamp(1.4rem,4vw,2rem)]"
-              }`}
-            >
+            <span className="max-w-[55%] truncate font-display text-[clamp(1.4rem,4vw,2rem)] text-ink-graphite">
               {song?.name || "Living Sketchbook"}
             </span>
-            <span
-              className={`whitespace-nowrap font-display text-ink-blueprint ${
-                isTiktokMode ? "text-[1.1rem] font-bold" : "text-[clamp(1.4rem,4vw,2rem)]"
-              }`}
-            >
+            <span className="whitespace-nowrap font-display text-[clamp(1.4rem,4vw,2rem)] text-ink-blueprint">
               {formatPreciseClock(currentTime)}
             </span>
           </div>
 
           <div
-            className="lyric-wrap pointer-events-none absolute z-20 flex flex-col items-center text-center px-4"
+            className="lyric-wrap pointer-events-none absolute z-20 flex flex-col items-center text-center"
             style={{
               perspective: "1000px",
-              top: isTiktokMode ? "36%" : "40vh",
-              left: isTiktokMode ? "12px" : "calc(max(50px, 4vw) + max(24px, 5vw))",
-              right: isTiktokMode ? "12px" : "max(24px, 5vw)",
+              top: "40vh",
+              left: "calc(max(50px, 4vw) + max(24px, 5vw))",
+              right: "max(24px, 5vw)",
             }}
           >
-            <div
-              className={`lyric-primary relative z-20 max-w-[min(1000px,100%)] whitespace-normal break-words font-display font-bold leading-[1.08] text-ink-graphite drop-shadow-sm ${
-                isTiktokMode ? "text-[clamp(1.8rem,5.5vw,2.9rem)]" : "text-[clamp(2.5rem,5vw,5.5rem)]"
-              }`}
-            >
+            <div className="lyric-primary relative z-20 max-w-[min(1000px,100%)] whitespace-normal break-words font-display text-[clamp(2.5rem,5vw,5.5rem)] font-bold leading-[1.05] text-ink-graphite drop-shadow-sm">
               {renderDrawnText(false)}
             </div>
 
-            <div
-              className={`translation-wrap absolute top-[100%] z-10 mt-[16px] max-w-[min(1000px,100%)] whitespace-normal break-words font-display font-bold leading-[1.08] text-ink-blueprint ${
-                isTiktokMode ? "text-[clamp(1.3rem,4.2vw,2.1rem)]" : "text-[clamp(2.2rem,4vw,4rem)]"
-              }`}
-            >
+            <div className="translation-wrap absolute top-[100%] z-10 mt-[15px] max-w-[min(1000px,100%)] whitespace-normal break-words font-display text-[clamp(2.2rem,4vw,4rem)] font-bold leading-[1.05]">
               {renderDrawnText(true)}
             </div>
           </div>
