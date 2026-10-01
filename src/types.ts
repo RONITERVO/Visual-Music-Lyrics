@@ -57,3 +57,11 @@ export interface Segment {
   translationSource?: string;
   language_code?: string;
 }
+
+export interface MusicLyricWord {
+  value: string;
+  start: number;
+  end: number;
+}
+
+export type MusicLyricTheme = "sketchbook" | "signal-bloom";

@@ -2,11 +2,14 @@
  * SPDX-License-Identifier: Apache-2.0 */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Check, CreditCard, Download, Loader2, Music2, Pause, Play, RefreshCw, RotateCcw, Search, Settings, Sparkles, Trash2, Upload, X, Youtube } from "lucide-react";
+import { Bot, Check, CreditCard, Download, Loader2, Music2, Palette, Pause, Play, RefreshCw, RotateCcw, Search, Settings, Sparkles, Trash2, Upload, X, Youtube } from "lucide-react";
 import { useStore } from "../lib/store";
 import { cleanTitle, formatBytes, formatClock, formatPreciseClock, getBrowserLanguageCode } from "../lib/utils";
-import { VisualizerEngine } from "../lib/graphics/VisualizerEngine";
 import { addAudioFiles, loadSongSegments } from "../lib/fileHandlers";
+import { MusicLyricReactivity, applyMusicLyricFrameStyles, measureLyricLayout, type MusicLyricLayout, type MusicLyricBounds } from "../lib/graphics/MusicLyricReactivity";
+import { createMusicLyricVisualizer, MUSIC_LYRIC_THEMES, type MusicLyricRenderer, type MusicLyricTheme } from "../lib/graphics/MusicLyricVisualizers";
+import { musicLyricSegmentAt, musicLyricDisplaySegmentAt, wordProgress } from "../lib/graphics/MusicLyricsTiming";
+import type { Segment } from "../types";
 import { createScribeTranscript } from "../lib/scribe";
 import { translateSegments } from "../lib/translate";
 import { createElevenLabsCheckoutSession, fetchElevenLabsEntitlement, type ElevenLabsEntitlement } from "../lib/billing";
@@ -86,6 +89,62 @@ function formatBalanceSeconds(seconds: number) {
   const minutes = Math.floor((safeSeconds % 3600) / 60);
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
+}
+
+function renderTimedWords(segment: Segment, currentTime: number, onSeek: (seconds: number) => void) {
+  if (!segment.words?.length) return renderProgressiveText(segment.primary, segment.start, segment.end, currentTime);
+  return segment.words.map((word, index) => {
+    const written = currentTime >= word.start;
+    const active = currentTime >= word.start && currentTime < word.end;
+    const progress = wordProgress(word.start, word.end, currentTime);
+    return (
+      <span key={`${word.start}-${index}`} className="music-lyrics-word-wrap">
+        <button
+          type="button"
+          className={`${written ? "written" : "waiting"} ${active ? "active" : ""}`}
+          aria-label={`Play from ${word.value}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onSeek(word.start);
+          }}
+          style={{
+            "--word-progress": `${progress * 100}%`,
+            "--word-hide": `${(1 - progress) * 100}%`,
+            "--word-index": index,
+          } as React.CSSProperties}
+        >
+          <span className="music-lyrics-word-ghost">{word.value}</span>
+          <span className="music-lyrics-word-ink" aria-hidden="true">{word.value}</span>
+        </button>
+        {index < (segment.words?.length ?? 0) - 1 ? " " : ""}
+      </span>
+    );
+  });
+}
+
+function renderProgressiveText(text: string, start: number, end: number, currentTime: number) {
+  const words = text.trim().split(/\s+/u).filter(Boolean);
+  if (!words.length) return null;
+  const duration = Math.max(0.05, end - start);
+  return words.map((word, index) => {
+    const wordStart = start + (duration * index) / words.length;
+    const wordEnd = start + (duration * (index + 1)) / words.length;
+    const progress = wordProgress(wordStart, wordEnd, currentTime);
+    return (
+      <span
+        key={`${index}-${word}`}
+        className={`music-lyrics-progressive-word ${progress > 0 ? "written" : "waiting"}`}
+        style={{
+          "--word-hide": `${(1 - progress) * 100}%`,
+          "--word-index": index,
+        } as React.CSSProperties}
+      >
+        <span className="music-lyrics-word-ghost">{word}</span>
+        <span className="music-lyrics-word-ink" aria-hidden="true">{word}</span>
+        {index < words.length - 1 ? " " : ""}
+      </span>
+    );
+  });
 }
 
 function normalizeLanguage(value: string) {
@@ -1494,7 +1553,7 @@ export function PlayerView() {
   const lastManualCommitAt = useStore((state) => state.lastManualCommitAt);
   const commitFeedback = useStore((state) => state.commitFeedback);
 
-  const visualizerRef = useRef<VisualizerEngine | null>(null);
+  const visualizerRef = useRef<MusicLyricRenderer | null>(null);
   const rafId = useRef<number>(0);
   const scribeAbortRef = useRef<AbortController | null>(null);
   const activeSongIdRef = useRef<string | null>(null);
@@ -1526,12 +1585,29 @@ export function PlayerView() {
   const [isTranslationRangePlaying, setIsTranslationRangePlaying] = useState(false);
   const [isReplacingTranslations, setIsReplacingTranslations] = useState(false);
   const [sectionStart, setSectionStart] = useState(0);
+  const [theme, setTheme] = useState<MusicLyricTheme>(() => {
+    if (typeof window !== "undefined") {
+      return (localStorage.getItem("visualizer_theme") as MusicLyricTheme) || "sketchbook";
+    }
+    return "sketchbook";
+  });
+  const primaryRef = useRef<HTMLDivElement>(null);
+  const translationRef = useRef<HTMLDivElement>(null);
+  const stageContainerRef = useRef<HTMLDivElement>(null);
+  const currentTimeRef = useRef(currentTime);
+
+  useEffect(() => {
+    currentTimeRef.current = currentTime;
+  }, [currentTime]);
 
   const song = audioFiles.find((audio) => audio.id === selectedAudioId) || null;
   const timingData = useMemo(() => parseTimingTextCache(song), [song?.timing?.textCache]);
   const transcriptSourceSummary = useMemo(() => getTranscriptSourceSummary(segments, timingData), [segments, timingData]);
   const translationSourceSummary = useMemo(() => getTranslationSourceSummary(segments, timingData), [segments, timingData]);
   const currentSegment = currentSegmentIndex >= 0 ? segments[currentSegmentIndex] : null;
+  const activeSegment = musicLyricSegmentAt(segments, currentTime);
+  const displaySegment = musicLyricDisplaySegmentAt(segments, currentTime) || currentSegment;
+  const cueExiting = Boolean(displaySegment && activeSegment && displaySegment !== activeSegment);
   const isCapturing = Boolean(song && activeSongIdRef.current === song.id && scribeStatus !== "saved" && scribeStatus !== "error");
   const isSectionCapturing = false;
   const nextCommitAt = lastManualCommitAt > 0 ? lastManualCommitAt + MIN_COMMIT_SEGMENT_SECONDS : MIN_COMMIT_SEGMENT_SECONDS;
@@ -1664,26 +1740,65 @@ export function PlayerView() {
   }, [audioFiles, query, youtubeRefreshNonce]);
 
   useEffect(() => {
-    visualizerRef.current = new VisualizerEngine();
-    visualizerRef.current.init("visualizer-canvas");
+    const canvas = document.getElementById("visualizer-canvas") as HTMLCanvasElement | null;
+    if (!canvas) return;
 
-    const tick = () => {
-      const analyser = useStore.getState().analyser;
-      const freq = useStore.getState().dataFrequency;
-      const time = useStore.getState().dataTime;
+    let visualizer: MusicLyricRenderer | undefined;
+    let disposed = false;
+    let frame = 0;
 
-      visualizerRef.current?.drawFrame(analyser, freq, time);
-      rafId.current = requestAnimationFrame(tick);
-    };
+    void createMusicLyricVisualizer(theme, canvas)
+      .then((created) => {
+        if (disposed) {
+          created.destroy?.();
+          return;
+        }
+        visualizer = created;
+        const reactivity = new MusicLyricReactivity();
+        let layout = measureLyricLayout(canvas, primaryRef.current, translationRef.current);
+        let lastLayoutAt = 0;
+        const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
-    rafId.current = requestAnimationFrame(tick);
+        const draw = (now = performance.now()) => {
+          if (disposed || !visualizer) return;
+          if (now - lastLayoutAt >= 80) {
+            layout = measureLyricLayout(canvas, primaryRef.current, translationRef.current);
+            lastLayoutAt = now;
+          }
+          const { analyser, dataFrequency, dataTime } = useStore.getState();
+          const totalDuration = Number(duration) || Number(song?.durationSeconds) || 198;
+          const progress = Math.max(0, Math.min(1, currentTimeRef.current / Math.max(0.01, totalDuration)));
+
+          const visualFrame = reactivity.sample(
+            analyser ?? undefined,
+            dataFrequency ?? undefined,
+            dataTime ?? undefined,
+            progress,
+            layout,
+            now
+          );
+
+          visualizer.draw(visualFrame);
+
+          if (stageContainerRef.current) {
+            applyMusicLyricFrameStyles(stageContainerRef.current, visualFrame);
+          }
+
+          if (!reducedMotion) {
+            frame = requestAnimationFrame(draw);
+          }
+        };
+
+        draw();
+      })
+      .catch(console.error);
 
     return () => {
-      scribeAbortRef.current?.abort();
-      visualizerRef.current?.destroy();
-      cancelAnimationFrame(rafId.current);
+      disposed = true;
+      cancelAnimationFrame(frame);
+      visualizer?.destroy?.();
     };
-  }, []);
+  }, [theme, song?.id, duration]);
 
   useEffect(() => {
     const audioEl = getAudioElement();
@@ -1737,8 +1852,10 @@ export function PlayerView() {
     if (!audioContext) {
       audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       analyser = audioContext.createAnalyser();
-      analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.78;
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.68;
+      analyser.minDecibels = -92;
+      analyser.maxDecibels = -12;
       dataFrequency = new Uint8Array(analyser.frequencyBinCount);
       dataTime = new Uint8Array(analyser.fftSize);
     }
@@ -2565,21 +2682,50 @@ export function PlayerView() {
         onChange={handleImportLibraryFile}
       />
 
-      <div className="stage-shell grid h-[100svh] w-full place-items-stretch" aria-label="Visualizer stage">
+      {/* Theme Switcher Button */}
+      <div className="fixed right-4 top-4 z-40 flex items-center gap-2" data-control="true">
+        <button
+          type="button"
+          className={`flex items-center gap-2 rounded-full px-4 py-1.5 font-display text-[0.88rem] font-bold shadow-md backdrop-blur-md transition active:scale-95 ${
+            theme === "signal-bloom"
+              ? "border border-cyan-400/40 bg-neutral-900/90 text-cyan-300 shadow-cyan-500/20 hover:border-cyan-400"
+              : "border border-ink-blueprint/25 bg-paper-light/95 text-ink-graphite shadow-black/10 hover:border-ink-blueprint"
+          }`}
+          onClick={() => {
+            const next = theme === "sketchbook" ? "signal-bloom" : "sketchbook";
+            setTheme(next);
+            if (typeof window !== "undefined") {
+              window.localStorage.setItem("visualizer_theme", next);
+            }
+          }}
+          title="Toggle Visualizer Theme: Living Sketchbook vs Signal Bloom"
+        >
+          <Palette size={14} className={theme === "signal-bloom" ? "text-cyan-400" : "text-amber-600"} />
+          <span>{theme === "signal-bloom" ? "Signal Bloom" : "Living Sketchbook"}</span>
+        </button>
+      </div>
+
+      <div
+        ref={stageContainerRef}
+        className={`stage-shell grid h-[100svh] w-full place-items-stretch transition-colors duration-500 ${
+          theme === "signal-bloom" ? "theme-signal-bloom bg-[#08090c]" : "bg-[#f4eee1]"
+        }`}
+        aria-label="Visualizer stage"
+      >
         <section className="stage pointer-events-none relative h-[100svh] w-full" tabIndex={0}>
           <canvas id="visualizer-canvas" className="absolute inset-0 z-[2] h-full w-full"></canvas>
 
           <div
-            className="stage-meta pointer-events-none absolute top-[30px] z-10 flex justify-between gap-4 opacity-45 mix-blend-multiply"
+            className="stage-meta pointer-events-none absolute top-[30px] z-10 flex justify-between gap-4 opacity-45 mix-blend-multiply transition-opacity"
             style={{
               left: "calc(max(50px, 4vw) + max(24px, 5vw))",
               right: "max(24px, 5vw)",
             }}
           >
             <span className="max-w-[55%] truncate font-display text-[clamp(1.4rem,4vw,2rem)] text-ink-graphite">
-              {song?.name || "Living Sketchbook"}
+              {song?.name || (theme === "signal-bloom" ? "Signal Bloom" : "Living Sketchbook")}
             </span>
-            <span className="whitespace-nowrap font-display text-[clamp(1.4rem,4vw,2rem)] text-ink-blueprint">
+            <span className="meta-clock whitespace-nowrap font-display text-[clamp(1.4rem,4vw,2rem)] text-ink-blueprint">
               {formatPreciseClock(currentTime)}
             </span>
           </div>
@@ -2588,18 +2734,28 @@ export function PlayerView() {
             className="lyric-wrap pointer-events-none absolute z-20 flex flex-col items-center text-center"
             style={{
               perspective: "1000px",
-              top: "40vh",
+              top: "38vh",
               left: "calc(max(50px, 4vw) + max(24px, 5vw))",
               right: "max(24px, 5vw)",
             }}
           >
-            <div className="lyric-primary relative z-20 max-w-[min(1000px,100%)] whitespace-normal break-words font-display text-[clamp(2.5rem,5vw,5.5rem)] font-bold leading-[1.05] text-ink-graphite drop-shadow-sm">
-              {renderDrawnText(false)}
-            </div>
+            {displaySegment ? (
+              <div className={`music-lyrics-cue ${cueExiting ? "exiting" : ""}`}>
+                <div ref={primaryRef} className="music-lyrics-primary pointer-events-auto">
+                  {renderTimedWords(displaySegment, currentTime, seekToTime)}
+                </div>
 
-            <div className="translation-wrap absolute top-[100%] z-10 mt-[15px] max-w-[min(1000px,100%)] whitespace-normal break-words font-display text-[clamp(2.2rem,4vw,4rem)] font-bold leading-[1.05]">
-              {renderDrawnText(true)}
-            </div>
+                {displaySegment.translation || displaySegment.secondary ? (
+                  <div ref={translationRef} className="music-lyrics-translation pointer-events-none">
+                    {displaySegment.translation || displaySegment.secondary}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="music-lyrics-primary opacity-60">
+                <span>{song ? cleanTitle(song.name) : "Drop an audio or video file to start"}</span>
+              </div>
+            )}
           </div>
         </section>
       </div>

@@ -305,3 +305,232 @@ button:disabled {
     filter: blur(3px);
   }
 }
+
+/* ==========================================================================
+   Kestrel Visualizer Typography & Theme Engine
+   1:1 match with Kestrel Music Studio (Living Sketchbook & Signal Bloom)
+   ========================================================================== */
+
+.music-lyrics-cue {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transform: translateY(var(--lyric-copy-lift, 0px)) scale(var(--lyric-copy-scale, 1));
+  transform-origin: center 44%;
+  transition: transform 70ms linear;
+  animation: music-lyric-cue-in 0.42s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.music-lyrics-cue.exiting {
+  animation: music-lyric-cue-out 0.42s ease-out both;
+}
+
+.music-lyrics-primary {
+  max-width: min(1100px, 100%);
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(38px, 6vw, 82px);
+  line-height: 1.05;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+  filter: drop-shadow(0 2px 0 rgba(35, 30, 28, 0.15));
+}
+
+.music-lyrics-word-wrap {
+  white-space: normal;
+  display: inline-block;
+}
+
+.music-lyrics-primary button {
+  position: relative;
+  display: inline-grid;
+  padding: 0 2px;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  letter-spacing: inherit;
+  vertical-align: baseline;
+  white-space: pre;
+  cursor: pointer;
+  transition: color 0.12s ease, transform 70ms linear;
+}
+
+.music-lyrics-word-ghost,
+.music-lyrics-word-ink {
+  grid-area: 1/1;
+  white-space: pre;
+}
+
+.music-lyrics-word-ghost {
+  opacity: 0.16;
+}
+
+.music-lyrics-word-ink {
+  clip-path: inset(-0.18em var(--word-hide, 100%) -0.22em -0.12em);
+  filter: blur(0);
+  transition: clip-path 55ms linear, opacity 0.16s ease-out, filter 0.16s ease-out, transform 0.16s ease-out;
+  will-change: clip-path, transform;
+}
+
+.music-lyrics-primary button.waiting .music-lyrics-word-ink {
+  opacity: 0;
+  filter: blur(3px);
+  transform: translateY(3px) rotate(-1deg) scale(0.98);
+}
+
+.music-lyrics-primary button.written {
+  opacity: 1;
+}
+
+.music-lyrics-primary button.active {
+  color: var(--color-ink-blueprint);
+  transform: translateY(-2px) scale(var(--lyric-active-scale, 1.01));
+}
+
+.music-lyrics-primary button.active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -0.07em;
+  width: var(--word-progress);
+  max-width: 100%;
+  height: 0.08em;
+  border-radius: 99px;
+  background: var(--color-ink-blueprint);
+}
+
+.music-lyrics-translation {
+  max-width: min(1000px, 100%);
+  margin-top: 14px;
+  color: var(--color-ink-blueprint);
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(24px, 3.8vw, 50px);
+  line-height: 1.08;
+  text-wrap: balance;
+  transform-origin: top center;
+  transform: rotateX(52deg) scaleY(1.12) translateY(3px);
+  filter: blur(1.2px);
+  opacity: 0.62;
+  animation: music-lyrics-water-ripple 4s ease-in-out infinite alternate;
+}
+
+/* --- Signal Bloom Theme (Dark Nocturnal Neon) --- */
+.theme-signal-bloom {
+  --lyrics-ink: #f0f4f8;
+  --lyrics-blue: #00e5ff;
+  --lyrics-paper: #08090c;
+  --lyrics-red: #ff3366;
+  background-color: var(--lyrics-paper) !important;
+  color: var(--lyrics-ink) !important;
+}
+
+.theme-signal-bloom .paper-grain-overlay,
+.theme-signal-bloom .binder-spine,
+.theme-signal-bloom .environment-texture {
+  display: none !important;
+}
+
+.theme-signal-bloom .stage-meta span {
+  color: #a8d6f2 !important;
+  opacity: 0.75;
+}
+
+.theme-signal-bloom .stage-meta .meta-clock {
+  color: #00e5ff !important;
+  text-shadow: 0 0 18px rgba(0, 229, 255, 0.7);
+}
+
+.theme-signal-bloom .music-lyrics-primary {
+  color: #f0f4f8 !important;
+  filter: drop-shadow(0 5px 22px rgba(0, 0, 0, 0.8));
+  text-shadow: 0 0 32px rgba(0, 229, 255, 0.35);
+}
+
+.theme-signal-bloom .music-lyrics-primary button.waiting {
+  opacity: 0.22;
+}
+
+.theme-signal-bloom .music-lyrics-primary button.active {
+  color: #00e5ff !important;
+  text-shadow: 0 0 22px rgba(0, 229, 255, 0.9);
+}
+
+.theme-signal-bloom .music-lyrics-primary button.active::after {
+  background: linear-gradient(90deg, #00e5ff, #8b5cf6, #ec4899);
+  box-shadow: 0 0 14px rgba(0, 229, 255, 0.8);
+}
+
+.theme-signal-bloom .music-lyrics-word-ghost {
+  opacity: 0.18;
+  color: #f0f4f8;
+}
+
+.theme-signal-bloom .music-lyrics-translation {
+  color: #c084fc !important;
+  text-shadow: 0 0 var(--lyric-glow, 24px) rgba(192, 132, 252, 0.6);
+  transform: translateY(var(--lyric-translation-lift, 0px));
+  filter: none;
+  opacity: 1;
+  animation: music-lyrics-signal-drift 3.6s ease-in-out infinite alternate;
+}
+
+/* Keyframes */
+@keyframes music-lyric-cue-in {
+  from {
+    opacity: 0;
+    filter: blur(5px);
+    transform: translateY(11px) rotate(-0.6deg) scale(0.975);
+  }
+}
+
+@keyframes music-lyric-cue-out {
+  from {
+    opacity: 1;
+    filter: blur(0);
+  }
+  to {
+    opacity: 0;
+    filter: blur(6px);
+    transform: translateY(-10px) rotate(0.5deg) scale(0.96);
+  }
+}
+
+@keyframes music-lyrics-water-ripple {
+  from {
+    transform: rotateX(52deg) scaleY(1.12) skewX(-2.2deg) translateY(3px);
+    filter: blur(1px);
+  }
+  to {
+    transform: rotateX(55deg) scaleY(1.18) skewX(2.2deg) translateY(7px);
+    filter: blur(1.8px);
+  }
+}
+
+@keyframes music-lyrics-signal-drift {
+  from {
+    transform: translateY(var(--lyric-translation-lift, 0px)) skewX(-0.35deg);
+  }
+  to {
+    transform: translateY(calc(var(--lyric-translation-lift, 0px) - 3px)) skewX(0.35deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .music-lyrics-cue,
+  .music-lyrics-cue.exiting,
+  .music-lyrics-translation {
+    animation: none;
+  }
+  .music-lyrics-cue {
+    transform: none;
+  }
+  .music-lyrics-word-ink {
+    transition: none;
+  }
+  .theme-signal-bloom .music-lyrics-translation {
+    transform: none;
+  }
+}
