@@ -135,6 +135,15 @@ https://YOUR_FIREBASE_HOSTING_DOMAIN/api/webhooks/stripe
 
 The webhook grants prepaid ElevenLabs seconds in Firestore after `payment_intent.succeeded`.
 
+New Scribe purchases are **paused by default**. Both payment creation endpoints require
+`ELEVENLABS_PURCHASES_ENABLED=true` on Cloud Functions, plus Stripe and app URL configuration.
+Leave it false or unset while the provider account or API permissions are unverified. The settings
+panel reads `/api/billing/elevenlabs/status` and disables purchases when paused or unavailable.
+Existing balances and successful-payment webhooks still work during the pause. Before enabling
+purchases again, verify the provider plan, endpoint permissions, and a real end-to-end transcription.
+Pausing creation does not cancel previously issued Stripe sessions or payment intents; check those
+separately when applying a pause to an already running service.
+
 ## Operational Signals
 
 Cloud Run and Cloud Functions emit structured production events for request duration, yt-dlp job completion/failure, Scribe second reservation/settlement, Scribe batch errors, Gemini translation completion, checkout creation, and Stripe webhook grants. `npm run check:release` checks core media logging hooks and deployment exclusions. It does not replace live staging checks.

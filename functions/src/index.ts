@@ -715,6 +715,23 @@ function requireStripe() {
   return new Stripe(STRIPE_SECRET_KEY);
 }
 
+function getElevenLabsBillingAvailability() {
+  // Fail closed until provider access and the paid service have been verified.
+  const purchasesEnabled = process.env.ELEVENLABS_PURCHASES_ENABLED === "true"
+    && Boolean(STRIPE_SECRET_KEY && APP_URL);
+  return {
+    purchasesEnabled,
+    message: purchasesEnabled ? "" : "Scribe purchases are temporarily paused. Your existing balance is kept.",
+  };
+}
+
+function requireElevenLabsPurchasesEnabled() {
+  const availability = getElevenLabsBillingAvailability();
+  if (!availability.purchasesEnabled) {
+    throw new PublicError(availability.message, 503, { code: "purchases_paused" });
+  }
+}
+
 function normalizeSeconds(value: any) {
   const seconds = Math.ceil(Number(value) || 0);
   return Math.max(ELEVENLABS_MIN_PURCHASE_SECONDS, seconds);
@@ -893,9 +910,9 @@ function sendPublicError(res: express.Response, error: any, fallback: string) {
     error: publicError.message,
     status: publicError.status,
     code: publicError.code,
-  }, publicError.status >= 500 ? "error" : "warn");
+  }, publicError.code === "purchases_paused" ? "info" : publicError.status >= 500 ? "error" : "warn");
   if (publicError.retryAfterSeconds) res.setHeader("Retry-After", String(publicError.retryAfterSeconds));
-  res.status(publicError.status).json({ error: publicError.message || fallback });
+  res.status(publicError.status).json({ error: publicError.message || fallback, ...(publicError.code ? { code: publicError.code } : {}) });
 }
 
 const app = express();
@@ -932,6 +949,11 @@ app.get(["/api/entitlements/me", "/entitlements/me"], async (req: AuthenticatedR
   } catch (error) {
     sendPublicError(res, error, "Could not load entitlements");
   }
+});
+
+app.get(["/api/billing/elevenlabs/status", "/billing/elevenlabs/status"], (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json(getElevenLabsBillingAvailability());
 });
 
 app.post(["/api/translate/gemini", "/translate/gemini"], async (req: AuthenticatedRequest, res) => {
@@ -987,6 +1009,7 @@ app.post(["/api/translate/gemini", "/translate/gemini"], async (req: Authenticat
 
 app.post(["/api/billing/elevenlabs/payment-intent", "/billing/elevenlabs/payment-intent"], async (req: AuthenticatedRequest, res) => {
   try {
+    requireElevenLabsPurchasesEnabled();
     const user = await requireFirebaseUser(req);
     const seconds = normalizeSeconds(req.body?.seconds);
     const amount = secondsToCents(seconds);
@@ -1025,6 +1048,7 @@ app.post(["/api/billing/elevenlabs/payment-intent", "/billing/elevenlabs/payment
 
 app.post(["/api/billing/elevenlabs/checkout-session", "/billing/elevenlabs/checkout-session"], async (req: AuthenticatedRequest, res) => {
   try {
+    requireElevenLabsPurchasesEnabled();
     const user = await requireFirebaseUser(req);
     if (!APP_URL) throw new PublicError("APP_URL is required for Stripe Checkout.", 500);
 

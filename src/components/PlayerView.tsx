@@ -14,7 +14,7 @@ import { musicLyricSegmentAt, musicLyricDisplaySegmentAt, wordProgress } from ".
 import type { Segment } from "../types";
 import { createScribeTranscript } from "../lib/scribe";
 import { translateSegments } from "../lib/translate";
-import { createElevenLabsCheckoutSession, fetchElevenLabsEntitlement, type ElevenLabsEntitlement } from "../lib/billing";
+import { createElevenLabsCheckoutSession, fetchElevenLabsBillingAvailability, fetchElevenLabsEntitlement, type ElevenLabsBillingAvailability, type ElevenLabsEntitlement } from "../lib/billing";
 import { buildGeneratedTimingText, replaceSegmentsInRange, saveSongTiming } from "../lib/timing";
 import { exportLibrary, importLibrary, LibraryTransferProgress } from "../lib/exportImport";
 import { clearPersistedUserData } from "../lib/persistence";
@@ -723,6 +723,9 @@ function SearchOverlay({
   const [entitlement, setEntitlement] = useState<ElevenLabsEntitlement | null>(null);
   const [billingStatus, setBillingStatus] = useState<"idle" | "loading" | "checkout" | "error">("idle");
   const [billingMessage, setBillingMessage] = useState("");
+  const [billingAvailability, setBillingAvailability] = useState<ElevenLabsBillingAvailability>({
+    purchasesEnabled: false, message: "Checking purchase availability…",
+  });
   const selectedSong = audioFiles.find((audio) => audio.id === selectedAudioId) || null;
   const isTranslationRangePreview = Boolean(isSectionMode && isTranslationRangePlaying);
   const sliderValue = isSectionMode && !isCapturing && !isTranslationRangePreview ? sectionStart : currentTime;
@@ -818,6 +821,16 @@ function SearchOverlay({
 
     let canceled = false;
     setBillingStatus("loading");
+    setBillingAvailability({ purchasesEnabled: false, message: "Checking purchase availability…" });
+    fetchElevenLabsBillingAvailability()
+      .then((availability) => {
+        if (!canceled) setBillingAvailability(availability);
+      })
+      .catch(() => {
+        if (!canceled) setBillingAvailability({
+          purchasesEnabled: false, message: "Purchases are unavailable right now. Please try again later.",
+        });
+      });
     fetchElevenLabsEntitlement()
       .then((nextEntitlement) => {
         if (canceled) return;
@@ -837,6 +850,7 @@ function SearchOverlay({
   }, [isKeyGateOpen]);
 
   const handleBuyScribeHour = async () => {
+    if (!billingAvailability.purchasesEnabled) return;
     setBillingStatus("checkout");
     setBillingMessage("");
     try {
@@ -1224,11 +1238,16 @@ function SearchOverlay({
               type="button"
               className="inline-flex items-center justify-center gap-2 rounded-[6px] bg-ink-blueprint px-3 py-2 text-paper-light transition hover:bg-ink-blueprint/90 disabled:cursor-not-allowed disabled:opacity-60"
               onClick={handleBuyScribeHour}
-              disabled={billingStatus === "checkout"}
+              disabled={!billingAvailability.purchasesEnabled || billingStatus === "checkout"}
             >
               {billingStatus === "checkout" ? <Loader2 size={16} className="animate-spin" /> : <CreditCard size={16} />}
               Buy 1h
             </button>
+            {billingAvailability.message && (
+              <span role="status" className="break-words text-[0.82rem] leading-5 text-ink-graphite">
+                {billingAvailability.message}
+              </span>
+            )}
             {billingMessage && (
               <span className="break-words text-[0.82rem] leading-5 text-ink-red">
                 {billingMessage}
