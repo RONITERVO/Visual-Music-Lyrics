@@ -21,7 +21,7 @@ export async function handleGlobalDroppedFiles(files: File[]) {
 
     const addedSongs = await addAudioFiles(audioFiles);
     await addTranscriptFiles(transcriptFiles, addedSongs);
-    pairOrphanTextItems();
+    await pairOrphanTextItems();
     return { addedSongs, audioFiles, transcriptFiles };
 }
 
@@ -134,52 +134,98 @@ async function addTranscriptFiles(files: File[], preferSongs: any[] = []) {
         // Find best song
         const target = findSongForTextItem(item, preferSongs);
         if (target) {
-            applyTextItemToSong(target, item);
+            await applyTextItemToSong(target, item);
         } else {
             newOrphans.push(item);
+            useStore.setState({
+                commitFeedback: `Loaded timing '${item.name}'. Drop matching audio/video to play.`
+            });
         }
     }
 
     useStore.setState({ orphanTextItems: newOrphans });
 }
 
-function findSongForTextItem(item: any, preferSongs: any[]) {
-    const state = useStore.getState();
-    const itemBase = item.base.toLowerCase().replace(/[^a-z0-9]+/g, "");
-    
-    // First check newly added songs
-    const preferred = preferSongs.find(s => {
-        const songBase = s.base.toLowerCase().replace(/[^a-z0-9]+/g, "");
-        return itemBase === songBase || itemBase.includes(songBase) || songBase.includes(itemBase);
-    });
-    if (preferred) return preferred;
-
-    // Check all songs
-    return state.audioFiles.find(s => {
-        const songBase = s.base.toLowerCase().replace(/[^a-z0-9]+/g, "");
-        return itemBase === songBase || itemBase.includes(songBase) || songBase.includes(itemBase);
-    });
+function normalizeForMatch(str: string): string {
+    return (str || "")
+        .toLowerCase()
+        .replace(/(_visual_timings|_whisper_words|_timings|_timing|_lyrics|_transcript|_subtitles|_synced|_words|_cues)/gi, "")
+        .replace(/[^a-z0-9]+/g, "");
 }
 
-function applyTextItemToSong(song: any, item: any) {
+function findSongForTextItem(item: any, preferSongs: any[]) {
     const state = useStore.getState();
+    const candidateSongs = [...preferSongs, ...state.audioFiles];
+    if (!candidateSongs.length) return null;
+
+    const itemRaw = (item.base || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const itemNorm = normalizeForMatch(item.base);
+
+    const matches = (song: any) => {
+        if (!song) return false;
+        const songRaw = (song.base || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+        const songNorm = normalizeForMatch(song.base);
+        return (
+            itemNorm === songNorm ||
+            itemRaw === songRaw ||
+            (Boolean(itemNorm) && Boolean(songNorm) && (itemNorm.includes(songNorm) || songNorm.includes(itemNorm))) ||
+            (Boolean(itemRaw) && Boolean(songRaw) && (itemRaw.includes(songRaw) || songRaw.includes(itemRaw)))
+        );
+    };
+
+    // 1. First check newly added songs
+    const preferred = preferSongs.find(matches);
+    if (preferred) return preferred;
+
+    // 2. If currently active song in player matches
+    if (state.selectedAudioId) {
+        const activeSong = state.audioFiles.find(s => s.id === state.selectedAudioId);
+        if (activeSong && matches(activeSong)) return activeSong;
+    }
+
+    // 3. Check any audio file in library
+    const found = state.audioFiles.find(matches);
+    if (found) return found;
+
+    // 4. Fallback: if only 1 song in library, pair with it
+    if (state.audioFiles.length === 1) {
+        return state.audioFiles[0];
+    }
+
+    // 5. Fallback: if currently selected song exists, pair with it
+    if (state.selectedAudioId) {
+        const activeSong = state.audioFiles.find(s => s.id === state.selectedAudioId);
+        if (activeSong) return activeSong;
+    }
+
+    return null;
+}
+
+export async function applyTextItemToSong(song: any, item: any) {
+    await ensureParsed(item);
     item.kind = "timed";
     
+    const state = useStore.getState();
     const newAudioFiles = state.audioFiles.map(s => {
         if (s.id === song.id) {
             return {
                 ...s,
                 timing: item,
                 recoveryStatus: ""
-            }
+            };
         }
         return s;
     });
 
     useStore.setState({ audioFiles: newAudioFiles });
+
+    // If this song is currently selected or no song is selected yet, load its segments immediately into the active player
+    if (!state.selectedAudioId || state.selectedAudioId === song.id) {
+        await loadSongSegments(song.id);
+    }
 }
 
-export function pairOrphanTextItems() {
+export async function pairOrphanTextItems() {
     const state = useStore.getState();
     if (!state.orphanTextItems.length || !state.audioFiles.length) return;
 
@@ -187,7 +233,7 @@ export function pairOrphanTextItems() {
     for (const item of state.orphanTextItems) {
         const song = findSongForTextItem(item, []);
         if (song) {
-            applyTextItemToSong(song, item);
+            await applyTextItemToSong(song, item);
         } else {
             remaining.push(item);
         }
@@ -218,5 +264,11 @@ export async function loadSongSegments(songId: string) {
         return { ...s, start, end };
     });
 
-    useStore.setState({ segments: distributed, currentSegmentIndex: -1, selectedAudioId: songId });
+    useStore.setState({ 
+        segments: distributed, 
+        currentSegmentIndex: -1, 
+        selectedAudioId: songId,
+        scribeMessage: song.timing ? "Synced" : "Ready",
+        commitFeedback: song.timing ? `Loaded ${distributed.length} lyric lines` : ""
+    });
 }

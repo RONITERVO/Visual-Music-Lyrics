@@ -82,43 +82,63 @@ function parseCueTranscript(text: string): Segment[] {
     return normalizeSegments(segments);
 }
 
-function parseJsonTranscript(text: string) {
-    let data; 
-    try { data = JSON.parse(text); } catch (e) {
+function parseJsonTranscript(text: string): { kind: "timed", title?: string, segments: Segment[] } {
+    let data: any; 
+    try { 
+        data = JSON.parse(text); 
+    } catch {
         // try loose fix
         const cleaned = text.trim().replace(/,\s*$/, "");
         data = JSON.parse(cleaned.endsWith("}") ? `{${cleaned}` : `{${cleaned}}`);
     }
 
-    const segments = Array.isArray(data) ? data : data.segments || data.transcript || data.captions || [];
-    if (segments.length) {
-        const parsed = segments.map((item: any, index: number) => {
-          const text = item.text || item.primary || item.content || item.lyric || item.raw || "";
+    const rawList = Array.isArray(data) 
+        ? data 
+        : data.segments || data.raw_segments || data.transcript || data.captions || data.cues || data.lines || data.items || [];
+
+    if (rawList.length) {
+        const parsed = rawList.map((item: any, index: number) => {
+          const rawText = item.text || item.primary || item.content || item.lyric || item.raw || 
+              (Array.isArray(item.active_lines) ? item.active_lines.map((l: any) => l.text).filter(Boolean).join(" ") : "");
+          const text = String(rawText || "").trim();
+          const start = Number(item.start ?? item.startTime ?? item.start_time ?? item.t0);
+          const end = Number(item.end ?? item.endTime ?? item.end_time ?? item.t1);
+          
+          let words: any[] = [];
+          if (Array.isArray(item.words)) {
+              words = item.words.map((w: any) => ({
+                  word: String(w.word ?? w.text ?? ""),
+                  start: Number(w.start ?? w.startTime ?? w.t0),
+                  end: Number(w.end ?? w.endTime ?? w.t1),
+                  probability: Number(w.probability ?? w.confidence ?? 1)
+              })).filter((w: any) => w.word && Number.isFinite(w.start));
+          }
+
           return {
-            id: item.id,
-            start: item.start ?? item.startTime ?? item.start_time,
-            end: item.end ?? item.endTime ?? item.end_time,
+            id: item.id || `seg_${index + 1}`,
+            start: Number.isFinite(start) ? start : NaN,
+            end: Number.isFinite(end) ? end : NaN,
             text,
             raw: item.raw || text,
             primary: item.primary || text,
-            translation: item.translation || item.secondary || "",
+            translation: item.translation || item.secondary || item.english || "",
             secondary: item.secondary || "",
             speaker: item.speaker || "",
             section: item.section || "",
             role: item.role || item.kind || "lyric",
             kind: item.kind || item.role || "lyric",
-            words: Array.isArray(item.words) ? item.words : [],
+            words,
             characterTimeline: Array.isArray(item.characterTimeline) ? item.characterTimeline : [],
             order: item.order ?? index,
-            source: item.source || data.source || data.transcriptionSource || "",
+            source: item.source || data.source || data.transcriptionSource || "imported",
             translationSource: item.translationSource || data.translationSource || "",
             language_code: item.language_code || data.language_code || ""
           };
         });
-        return { kind: "timed" as any, segments: normalizeSegments(parsed) };
+        return { kind: "timed" as const, title: data.title || "", segments: normalizeSegments(parsed) };
     }
     
-    return { kind: "timed" as any, segments: parsePlainText(data.text || data.transcript || "") };
+    return { kind: "timed" as const, segments: parsePlainText(data.text || data.transcript || "") };
 }
 
 function parseLooseTimedText(text: string) {
@@ -194,6 +214,9 @@ function normalizeSegments(rawSegments: any[]): Segment[] {
                  if (segment.role !== "adlib") last.role = segment.role;
             } else {
                  last.primary = last.primary + " " + segment.primary;
+            }
+            if (segment.words && segment.words.length) {
+                 last.words = [...(last.words || []), ...segment.words];
             }
         } else {
             mergedSegments.push(segment);

@@ -124,12 +124,12 @@ export default function App() {
     backendSessionEnabled ? getBackendWarmMessage(1) : ""
   );
   const [backendWarmNonce, setBackendWarmNonce] = useState(0);
-  const canAcceptDropsRef = useRef(!backendSessionEnabled);
+  const canAcceptDropsRef = useRef(true);
   const isAuthBlocked = authEnabled && !isAuthBypassed && (!authReady || !authUser);
 
   useEffect(() => {
-    canAcceptDropsRef.current = (!backendSessionEnabled || backendWarmState === "ready") && !isAuthBlocked;
-  }, [backendSessionEnabled, backendWarmState, isAuthBlocked]);
+    canAcceptDropsRef.current = !isAuthBlocked;
+  }, [isAuthBlocked]);
 
   useEffect(() => {
     if (!authEnabled) return;
@@ -285,6 +285,12 @@ export default function App() {
       const firstPlayable = result.addedSongs.find((song: any) => song.file && song.url);
       if (firstPlayable) {
         await loadSongSegments(firstPlayable.id);
+      } else {
+        const state = useStore.getState();
+        const activeId = state.selectedAudioId || (state.audioFiles.length > 0 ? state.audioFiles[0].id : null);
+        if (activeId) {
+          await loadSongSegments(activeId);
+        }
       }
     };
 
@@ -331,7 +337,7 @@ export default function App() {
         </div>
       )}
 
-      {backendSessionEnabled && backendWarmState !== "ready" && (
+      {backendSessionEnabled && !isAuthBypassed && backendWarmState !== "ready" && (
         <div className="fixed inset-0 z-[110] grid place-items-center bg-black/65 backdrop-blur-sm">
           <div className="grid w-[min(460px,92vw)] gap-4 rounded-2xl border border-ink-blueprint/30 bg-paper-light/95 p-6 text-center text-ink-graphite shadow-2xl">
             <div className="mx-auto h-11 w-11 rounded-full border-4 border-ink-blueprint/20 border-t-ink-blueprint animate-spin" />
@@ -349,8 +355,8 @@ export default function App() {
               </span>
             </div>
 
-            {backendWarmState === "error" && (
-              <div className="flex justify-center">
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              {backendWarmState === "error" && (
                 <button
                   type="button"
                   className="rounded-full border border-ink-blueprint/30 px-4 py-2 font-body text-[0.95rem] text-ink-blueprint transition hover:bg-ink-blueprint/10"
@@ -358,8 +364,20 @@ export default function App() {
                 >
                   Retry backend wake-up
                 </button>
-              </div>
-            )}
+              )}
+              <button
+                type="button"
+                className="rounded-full bg-ink-blueprint/15 px-4 py-2 font-body text-[0.95rem] text-ink-blueprint transition hover:bg-ink-blueprint/25"
+                onClick={() => {
+                  setIsAuthBypassed(true);
+                  if (typeof window !== "undefined") {
+                    window.localStorage.setItem("local_auth_bypass", "true");
+                  }
+                }}
+              >
+                Continue Offline / Local Mode
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -410,9 +428,9 @@ export default function App() {
 
       {isDragging && (
         <div className="fixed inset-0 z-[100] grid place-items-center bg-black/60 backdrop-blur-sm pointer-events-none">
-          <div className="w-[min(400px,90vw)] min-h-[200px] p-8 grid place-items-center text-center bg-transparent drop-card-fx rounded-xl border-2 border-dashed border-ink-blueprint">
-            <strong className="font-display text-[3rem] text-ink-blueprint">Drop audio</strong>
-            <span className="text-paper-light font-body text-xl">The visualizer will take it from here</span>
+          <div className="w-[min(440px,90vw)] min-h-[200px] p-8 grid place-items-center text-center bg-paper-light/90 shadow-2xl rounded-2xl border-2 border-dashed border-ink-blueprint">
+            <strong className="font-display text-[2.5rem] text-ink-blueprint leading-tight">Drop media or lyrics</strong>
+            <span className="text-ink-graphite-light font-body text-base mt-2">Audio, video, or timing JSON will be synced immediately</span>
           </div>
         </div>
       )}
