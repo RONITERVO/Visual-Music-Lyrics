@@ -7,6 +7,7 @@
  */
 
 import { resolveSketchbookHorizon, type MusicLyricBounds, type MusicLyricFrame } from "./MusicLyricReactivity";
+import type { MusicLyricRenderSize } from "./MusicLyricVisualizers";
 
 interface RainDrop {
   x: number;
@@ -59,7 +60,7 @@ export class SketchbookMusicLyricVisualizer {
   private eventIndex = 0;
   private fish?: Fish;
 
-  constructor(private readonly canvas: HTMLCanvasElement) {
+  constructor(private readonly canvas: HTMLCanvasElement, private readonly outputSize?: MusicLyricRenderSize) {
     const context = canvas.getContext("2d");
     if (!context) throw new Error("The Living sketchbook lyric canvas is unavailable.");
     this.context = context;
@@ -67,7 +68,7 @@ export class SketchbookMusicLyricVisualizer {
 
   draw(frame: MusicLyricFrame) {
     this.resize();
-    const ratio = lyricPixelRatio();
+    const ratio = this.outputSize?.pixelRatio ?? lyricPixelRatio();
     const width = this.canvas.width / ratio;
     const height = this.canvas.height / ratio;
     const horizon = resolveSketchbookHorizon(frame.layout.horizon, height);
@@ -99,8 +100,8 @@ export class SketchbookMusicLyricVisualizer {
   }
 
   private resize() {
-    const rectangle = this.canvas.getBoundingClientRect();
-    const ratio = lyricPixelRatio();
+    const rectangle = this.outputSize ?? this.canvas.getBoundingClientRect();
+    const ratio = this.outputSize?.pixelRatio ?? lyricPixelRatio();
     const width = Math.max(1, Math.round(rectangle.width * ratio));
     const height = Math.max(1, Math.round(rectangle.height * ratio));
     if (this.canvas.width !== width || this.canvas.height !== height) {

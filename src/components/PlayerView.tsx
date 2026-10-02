@@ -2,7 +2,8 @@
  * SPDX-License-Identifier: Apache-2.0 */
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Bot, Check, CreditCard, Download, Loader2, Music2, Palette, Pause, Play, RefreshCw, RotateCcw, Search, Settings, Sparkles, Trash2, Upload, X, Youtube } from "lucide-react";
+import { Bot, Check, CreditCard, Download, Film, Loader2, Music2, Palette, Pause, Play, RefreshCw, RotateCcw, Search, Settings, Sparkles, Trash2, Upload, X, Youtube } from "lucide-react";
+import { VideoExportDialog } from "./VideoExportDialog";
 import { useStore } from "../lib/store";
 import { cleanTitle, formatBytes, formatClock, formatPreciseClock, getBrowserLanguageCode } from "../lib/utils";
 import { addAudioFiles, loadSongSegments } from "../lib/fileHandlers";
@@ -633,6 +634,7 @@ function SearchOverlay({
   onOpen,
   onClose,
   onExportLibrary,
+  onExportVideo,
   onImportLibrary,
   onClearAllData,
   onSelectSong,
@@ -676,6 +678,7 @@ function SearchOverlay({
   onOpen: () => void;
   onClose: () => void;
   onExportLibrary: () => void;
+  onExportVideo: () => void;
   onImportLibrary: () => void;
   onClearAllData: () => void;
   onSelectSong: (songId: string) => void;
@@ -902,6 +905,9 @@ function SearchOverlay({
           />
         </div>
         <div className="flex min-w-0 flex-wrap items-center justify-end gap-1 sm:min-w-fit sm:flex-nowrap sm:gap-2">
+          <ControlIconButton label="Export video" onClick={onExportVideo} disabled={!selectedSong?.file || isLibraryTransferBusy}>
+            <Film size={18} />
+          </ControlIconButton>
           <ControlIconButton
             label="Export library"
             onClick={onExportLibrary}
@@ -1569,6 +1575,8 @@ function getTimedWordReveal(word: TimedDrawWord, currentTime: number) {
 }
 
 export function PlayerView() {
+  const [videoExportOpen, setVideoExportOpen] = useState(false);
+  const [videoExportRunning, setVideoExportRunning] = useState(false);
   const selectedAudioId = useStore((state) => state.selectedAudioId);
   const audioFiles = useStore((state) => state.audioFiles);
   const segments = useStore((state) => state.segments);
@@ -1768,7 +1776,7 @@ export function PlayerView() {
 
   useEffect(() => {
     const canvas = document.getElementById("visualizer-canvas") as HTMLCanvasElement | null;
-    if (!canvas) return;
+    if (!canvas || videoExportRunning) return;
 
     let visualizer: MusicLyricRenderer | undefined;
     let disposed = false;
@@ -1839,7 +1847,7 @@ export function PlayerView() {
       delete canvas.dataset.theme;
       visualizer?.destroy?.();
     };
-  }, [theme, song?.id, duration]);
+  }, [theme, song?.id, duration, videoExportRunning]);
 
   // A new/empty cue can move the waterline even when reduced motion stops the animation loop.
   useLayoutEffect(() => {
@@ -2705,6 +2713,9 @@ export function PlayerView() {
     >
       <div className="paper-grain-overlay pointer-events-none"></div>
 
+      {videoExportOpen && song?.file && <VideoExportDialog song={song} segments={segments} theme={theme}
+        onClose={() => setVideoExportOpen(false)} onBusyChange={setVideoExportRunning} />}
+
       <SearchOverlay
         isOpen={isSearchOpen}
         query={query}
@@ -2714,6 +2725,7 @@ export function PlayerView() {
         onOpen={() => setIsSearchOpen(true)}
         onClose={() => setIsSearchOpen(false)}
         onExportLibrary={handleExportLibrary}
+        onExportVideo={() => { getAudioElement().pause(); setVideoExportOpen(true); }}
         onImportLibrary={handlePickImportLibrary}
         onClearAllData={handleClearAllData}
         onSelectSong={handleSelectSong}

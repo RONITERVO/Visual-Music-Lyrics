@@ -108,6 +108,17 @@ A flat array (or `{ "words": [...] }`) also works with `language: "es" | "en"` a
 
 Choose **Download timing JSON** for a portable player document, or **Use lyrics** to attach it to the chosen song. Applying checks timings against the audio duration; downloading without audio cannot make that check. Spanish and English retain independent word timings, overlapping cues are combined, and combined entries such as `en la` keep their supplied span. Punctuation-only placeholders remain in review notes rather than lyrics. Invalid/zero-length timings are rejected instead of being invented or silently dropped. Import one Gemini song at a time, review playback, and use **Export library** to transfer finished songs to your phone. Existing player JSON, LRC, SRT and VTT imports continue to work.
 
+## Export a visualizer video locally
+
+Run `npm run dev:local`, select a song, and open **Library and playback controls → Export video** (the film icon). The export includes the selected visualizer, Spanish/English word reveals, original song audio, song title, and running timer. It renders from the audio timeline without recording real-time playback. Both themes support portrait 9:16, landscape 16:9, or square, at 720p or 1080p and 30 fps. Portrait 720p is the faster default.
+
+- **Publishing MP4:** H.264/yuv420p at high quality, with AAC audio. Existing AAC streams are copied; other audio codecs are converted to AAC. Suitable for common publishing tools; the video compression is not mathematically lossless.
+- **Lossless master MKV:** H.264 RGB lossless compression preserves the exported canvas pixels, and the original audio stream is copied. Files are larger and some publishing tools require conversion to MP4.
+
+The render uses the existing scene engines and an offline audio spectrum. Canvas text reproduces each theme's lyric style, including Sketchbook reflections, but is not a pixel-identical capture of browser CSS. Render speed depends on the computer, theme and resolution; exporting is not instant. The dialog reports progress and measured speed and allows cancellation without changing the library. Keep the tab open until completion, then download within ten minutes. Rendering uses bounded frame batches; audio is decoded in memory (up to 100 MB input / 20 minutes).
+
+Exports run entirely on the local computer using the bundled FFmpeg, with no API credits or uploads to a third party. The endpoint accepts only same-origin loopback requests, one active export at a time, and is absent from production. Hosted/phone playback remains available; export videos from the desktop local app. Uploaded source files are not deleted. Temporary export files expire after ten minutes of inactivity; starting multiple exports can discard older completed downloads.
+
 ## Production Build
 
 ```bash

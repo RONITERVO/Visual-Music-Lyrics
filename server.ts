@@ -4,6 +4,7 @@
 import "dotenv/config";
 import express from "express";
 import { registerLocalSuno } from "./server/localSuno";
+import { registerLocalVideo } from "./server/localVideo";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import fs from "fs";
@@ -4950,6 +4951,7 @@ async function startServer() {
   const PORT = Number(process.env.PORT || 3000);
   app.set("trust proxy", 1);
   registerLocalSuno(app);
+  registerLocalVideo(app);
 
   app.use("/api", (req, res, next) => {
     applyApiCors(req, res);

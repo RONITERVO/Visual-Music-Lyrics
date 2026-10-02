@@ -6,6 +6,7 @@
  */
 
 import type { MusicLyricFrame } from "./MusicLyricReactivity";
+import type { MusicLyricRenderSize } from "./MusicLyricVisualizers";
 
 interface LightSeed {
   angle: number;
@@ -60,7 +61,7 @@ export class SignalBloomMusicLyricVisualizer {
   private pulseCursor = 0;
   private lastTransientBurstAt = -1;
 
-  constructor(private readonly canvas: HTMLCanvasElement) {
+  constructor(private readonly canvas: HTMLCanvasElement, private readonly outputSize?: MusicLyricRenderSize) {
     const context = canvas.getContext("2d");
     if (!context) throw new Error("The Signal bloom lyric canvas is unavailable.");
     this.context = context;
@@ -80,7 +81,7 @@ export class SignalBloomMusicLyricVisualizer {
     );
     this.rotation += frame.delta * (0.045 + frame.presence * 0.16 + frame.centroid * 0.08);
 
-    const ratio = lyricPixelRatio();
+    const ratio = this.outputSize?.pixelRatio ?? lyricPixelRatio();
     const width = this.canvas.width / ratio;
     const height = this.canvas.height / ratio;
     const journeyX = width * (0.18 + frame.progress * 0.64);
@@ -130,8 +131,8 @@ export class SignalBloomMusicLyricVisualizer {
   }
 
   private resize() {
-    const rectangle = this.canvas.getBoundingClientRect();
-    const ratio = lyricPixelRatio();
+    const rectangle = this.outputSize ?? this.canvas.getBoundingClientRect();
+    const ratio = this.outputSize?.pixelRatio ?? lyricPixelRatio();
     const width = Math.max(1, Math.round(rectangle.width * ratio));
     const height = Math.max(1, Math.round(rectangle.height * ratio));
     if (this.canvas.width !== width || this.canvas.height !== height) {

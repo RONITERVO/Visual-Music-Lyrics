@@ -579,6 +579,7 @@ html[data-visualizer-theme="signal-bloom"] button[aria-label="Open library and p
 .gemini-import-dialog button { cursor: pointer; }
 .gemini-import-actions button { border: 1px solid #315ba988; padding: 10px 12px; border-radius: 8px; color: #23498d; }
 .gemini-import-dialog button:disabled { opacity: .45; cursor: default; }
+.video-download-link { display: inline-block; padding: 10px 14px; border-radius: 8px; background: #23498d; color: white; text-decoration: none; }
 @media (max-width: 400px) { .gemini-import-dialog { padding: 16px; } }
 @media (max-width: 600px) {
   :root { --binder-spine-width: 22px; }
