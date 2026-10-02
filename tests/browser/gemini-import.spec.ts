@@ -79,3 +79,41 @@ test("invalid JSON timings cannot overwrite a selected song; cancel preserves it
   await page.evaluate(() => { const audio = document.querySelector("audio")!; audio.pause(); audio.currentTime = 2; });
   await expect(page.locator(".music-lyrics-primary .music-lyrics-word-ghost")).toHaveText(["Keep", "these", "lyrics"]);
 });
+
+test("dropping a video with converted JSON skips OCR and preserves bilingual playback", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const requests: string[] = [];
+  await page.route("**/api/local/suno**", async route => {
+    requests.push(route.request().url());
+    if (new URL(route.request().url()).searchParams.get("audioOnly") !== "1") {
+      await route.fulfill({ status: 500, json: { error: "OCR must not run with supplied timings" } });
+      return;
+    }
+    await route.fulfill({ json: { audioBase64: silentAudio().toString("base64"), mimeType: "audio/mp4" } });
+  });
+  const converted = { segments: [{ start: 1.1, end: 4.2, primary: "Hola mundo", translation: "Hello world", translationTiming: "sung",
+    words: [{ value: "Hola", start: 1.1, end: 2.15 }, { value: "mundo", start: 2.15, end: 3.2, uncertain: true }],
+    translationWords: [{ value: "Hello", start: 3.1, end: 3.6 }, { value: "world", start: 3.6, end: 4.2 }],
+  }] };
+  await page.goto("/");
+  await page.evaluate(converted => {
+    const dataTransfer = new DataTransfer();
+    dataTransfer.items.add(new File(["video fixture"], "Suno song.mp4", { type: "video/mp4" }));
+    dataTransfer.items.add(new File([JSON.stringify(converted)], "converted-review.json", { type: "application/json" }));
+    window.dispatchEvent(new DragEvent("drop", { dataTransfer, bubbles: true }));
+  }, converted);
+  await expect(page.getByRole("status")).toContainText("OCR and Whisper were skipped");
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toContain("audioOnly=1");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button", { name: "Dismiss", exact: true }).click();
+  await page.waitForFunction(() => document.querySelector("audio")!.readyState >= 2);
+  await page.evaluate(() => { const audio = document.querySelector("audio")!; audio.pause(); audio.currentTime = 3.15; });
+  await expect(page.locator(".music-lyrics-primary button.active")).toContainText("mundo");
+  await expect(page.locator(".music-lyrics-translation button.active")).toContainText("Hello");
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector("audio")!.readyState >= 2);
+  await page.evaluate(() => { const audio = document.querySelector("audio")!; audio.pause(); audio.currentTime = 3.15; });
+  await expect(page.locator(".music-lyrics-translation button.active")).toContainText("Hello");
+  expect(requests).toHaveLength(1);
+});

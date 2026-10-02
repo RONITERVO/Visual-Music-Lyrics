@@ -141,7 +141,7 @@ export default function App() {
     mediaAbortRef.current = controller;
     setMediaImportBusy(true);
     const hasVideo = files.some(file => file.type.startsWith("video/") || /\.(mp4|mkv|mov)$/i.test(file.name));
-    setMediaImportMessage(hasVideo ? "Extracting audio and aligning Spanish / English lyrics locally. This can take several minutes." : "Adding songs and lyrics…");
+    setMediaImportMessage(hasVideo ? "Importing video and checking supplied lyric timings…" : "Adding songs and lyrics…");
     try {
       const documents = await Promise.all(files.filter(file => TRANSCRIPT_EXTENSIONS.has(getExtension(file.name)))
         .map(async file => {
@@ -163,8 +163,9 @@ export default function App() {
       const state = useStore.getState();
       const id = first?.id || state.selectedAudioId || state.audioFiles[0]?.id;
       if (id) await loadSongSegments(id);
-      setMediaImportMessage(hasVideo
+      setMediaImportMessage(result.alignedVideos
         ? "Audio and bilingual lyrics added. Review the machine-aligned text and timing before publishing."
+        : result.reusedVideoTimings ? "Audio and supplied lyrics added. OCR and Whisper were skipped."
         : result.audioFiles.length || result.transcriptFiles.length ? "Files added." : "Choose audio, a Suno video, or a timing JSON, LRC, SRT or VTT file.");
     } catch (error) {
       setMediaImportMessage(controller.signal.aborted ? "Import canceled." : getBackendErrorMessage(error));

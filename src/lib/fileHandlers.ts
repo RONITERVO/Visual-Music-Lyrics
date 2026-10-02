@@ -5,30 +5,76 @@ import { useStore, GlobalState } from "./store";
 import { AUDIO_EXTENSIONS, TRANSCRIPT_EXTENSIONS } from "./fileSystem";
 import { getExtension, getBaseName, getAudioMimeType, getFileRelativePath, getTopFolderName, createId, getSongFileKey } from "./utils";
 import { parseTranscript } from "./parser";
-import { importLocalSuno } from "./localSuno";
+import { extractLocalSunoAudio, importLocalSuno } from "./localSuno";
+
+function isVideoFile(file: File) {
+    return file.type.startsWith("video/") || ["mp4", "mkv", "mov"].includes(getExtension(file.name));
+}
+
+function companionTiming(video: File, candidates: any[], allowSinglePair: boolean) {
+    const base = normalizeForMatch(getBaseName(video.name));
+    const names = (item: any) => [item.base, item.title].map(normalizeForMatch).filter(Boolean);
+    const exact = candidates.filter(item => base && names(item).includes(base));
+    const matches = exact.length ? exact : candidates.filter(item => base && names(item).some(name => name.includes(base) || base.includes(name)));
+    if (matches.length > 1) {
+        throw new Error(`Multiple timing files match ${video.name}. Add one video with its timing file at a time.`);
+    }
+    return matches[0] || (allowSinglePair && candidates.length === 1 ? candidates[0] : null);
+}
 
 export async function handleGlobalDroppedFiles(files: File[], signal?: AbortSignal) {
     const audioFiles: File[] = [];
-    const transcriptFiles: File[] = [];
+    const transcriptFiles = files.filter(file => !isVideoFile(file) && TRANSCRIPT_EXTENSIONS.has(getExtension(file.name)));
+    // Inspect supplied timings before starting any expensive video alignment.
+    const supplied = await Promise.all(transcriptFiles.map(async file => ensureParsed(createTranscriptItem(file))));
+    const timed = supplied.filter(item => item.segments?.length && item.segments.every((segment: any) =>
+        Number.isFinite(segment.start) && segment.start >= 0 && Number.isFinite(segment.end) && segment.end > segment.start));
+    const media = files.filter(file => isVideoFile(file) || AUDIO_EXTENSIONS.has(getExtension(file.name)) || file.type.startsWith("audio/"));
+    const companions = new Map<File, File>();
+    for (const video of media.filter(isVideoFile)) {
+        const timing = companionTiming(video, timed, media.length === 1 && transcriptFiles.length === 1);
+        if (!timing) continue;
+        if ([...companions.values()].includes(timing.file)) {
+            throw new Error(`The timing file ${timing.name} matches more than one video. Add one video with its timing file at a time.`);
+        }
+        companions.set(video, timing.file);
+    }
+    const audioTimings = new Map<File, File>();
+    let alignedVideos = 0;
+    let reusedVideoTimings = 0;
 
     for (const file of files) {
         const ext = getExtension(file.name);
-        if (file.type.startsWith("video/") || ["mp4", "mkv", "mov"].includes(ext)) {
-            useStore.setState({ commitFeedback: `Extracting audio and bilingual lyrics from ${file.name}…` });
-            const imported = await importLocalSuno(file, signal);
-            audioFiles.push(imported.audio);
-            transcriptFiles.push(imported.timing);
+        if (isVideoFile(file)) {
+            const timing = companions.get(file);
+            if (timing) {
+                useStore.setState({ commitFeedback: `Extracting audio from ${file.name}; using supplied lyrics…` });
+                const audio = await extractLocalSunoAudio(file, signal);
+                audioFiles.push(audio);
+                audioTimings.set(audio, timing);
+                reusedVideoTimings++;
+            } else {
+                useStore.setState({ commitFeedback: `Extracting audio and bilingual lyrics from ${file.name}…` });
+                const imported = await importLocalSuno(file, signal);
+                audioFiles.push(imported.audio);
+                transcriptFiles.push(imported.timing);
+                audioTimings.set(imported.audio, imported.timing);
+                alignedVideos++;
+            }
         } else if (AUDIO_EXTENSIONS.has(ext) || file.type.startsWith("audio/")) {
             audioFiles.push(file);
-        } else if (TRANSCRIPT_EXTENSIONS.has(ext)) {
-            transcriptFiles.push(file);
         }
     }
 
     const addedSongs = await addAudioFiles(audioFiles);
-    await addTranscriptFiles(transcriptFiles, addedSongs);
+    const timingTargets = new Map<File, any>();
+    audioFiles.forEach((audio, index) => {
+        const timing = audioTimings.get(audio);
+        if (timing) timingTargets.set(timing, addedSongs[index]);
+    });
+    await addTranscriptFiles(transcriptFiles, addedSongs, timingTargets);
     await pairOrphanTextItems();
-    return { addedSongs, audioFiles, transcriptFiles };
+    return { addedSongs, audioFiles, transcriptFiles, alignedVideos, reusedVideoTimings };
 }
 
 async function ensureParsed(item: any) {
@@ -126,7 +172,7 @@ function createTranscriptItem(file: File, options: any = {}) {
     };
 }
 
-async function addTranscriptFiles(files: File[], preferSongs: any[] = []) {
+async function addTranscriptFiles(files: File[], preferSongs: any[] = [], timingTargets = new Map<File, any>()) {
     const state = useStore.getState();
     const newOrphans = [...state.orphanTextItems];
 
@@ -138,7 +184,7 @@ async function addTranscriptFiles(files: File[], preferSongs: any[] = []) {
         await ensureParsed(item);
         
         // Find best song
-        const target = findSongForTextItem(item, preferSongs);
+        const target = timingTargets.get(f) || findSongForTextItem(item, preferSongs);
         if (target) {
             await applyTextItemToSong(target, item);
         } else {
