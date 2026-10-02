@@ -65,6 +65,8 @@ export interface MusicLyricWord {
   value: string;
   start: number;
   end: number;
+  uncertain?: boolean;
+  sourceIndex?: number;
 }
 
 export type MusicLyricTheme = "sketchbook" | "signal-bloom";

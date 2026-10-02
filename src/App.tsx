@@ -6,7 +6,10 @@ import { LogIn, LogOut } from "lucide-react";
 import { GraphiteDesignSystem } from "./lib/graphics/GraphiteEngine";
 import { useStore } from "./lib/store";
 import { PlayerView } from "./components/PlayerView";
-import { getDroppedFiles } from "./lib/fileSystem";
+import { getDroppedFiles, TRANSCRIPT_EXTENSIONS, AUDIO_EXTENSIONS } from "./lib/fileSystem";
+import { getExtension } from "./lib/utils";
+import { isGeminiWordJson } from "./lib/geminiImport";
+import { GeminiImportDialog, type GeminiImportDraft } from "./components/GeminiImportDialog";
 import { handleGlobalDroppedFiles, loadSongSegments } from "./lib/fileHandlers";
 import { restorePersistedLibrary, persistLibrary, loadSettings, saveSettings } from "./lib/persistence";
 import { fetchBackendHealth, shouldUseHostedBackend } from "./lib/api";
@@ -129,6 +132,7 @@ export default function App() {
   const mediaAbortRef = useRef<AbortController | null>(null);
   const [mediaImportMessage, setMediaImportMessage] = useState("");
   const [mediaImportBusy, setMediaImportBusy] = useState(false);
+  const [geminiImport, setGeminiImport] = useState<GeminiImportDraft | null>(null);
   const isAuthBlocked = authEnabled && !isAuthBypassed && (!authReady || !authUser);
 
   const importMedia = useCallback(async (files: File[]) => {
@@ -139,6 +143,21 @@ export default function App() {
     const hasVideo = files.some(file => file.type.startsWith("video/") || /\.(mp4|mkv|mov)$/i.test(file.name));
     setMediaImportMessage(hasVideo ? "Extracting audio and aligning Spanish / English lyrics locally. This can take several minutes." : "Adding songs and lyrics…");
     try {
+      const documents = await Promise.all(files.filter(file => TRANSCRIPT_EXTENSIONS.has(getExtension(file.name)))
+        .map(async file => {
+          if (file.size > 5 * 1024 * 1024) throw new Error("Timing files must be under 5 MB.");
+          return { file, text: await file.text() };
+        }));
+      const gemini = documents.filter(item => isGeminiWordJson(item.text));
+      if (gemini.length > 1) throw new Error("Import one Gemini song at a time so you can choose its audio and phrase guide.");
+      if (gemini.length) {
+        const guides = documents.filter(item => item !== gemini[0] && /^(txt|text|lyrics)$/.test(getExtension(item.file.name)));
+        setGeminiImport({ text: gemini[0].text, name: gemini[0].file.name, lyrics: guides.length === 1 ? guides[0].text : "",
+          media: files.filter(file => file.type.startsWith("audio/") || file.type.startsWith("video/") || AUDIO_EXTENSIONS.has(getExtension(file.name)) || getExtension(file.name) === "mov"),
+        });
+        setMediaImportMessage("");
+        return;
+      }
       const result = await handleGlobalDroppedFiles(files, controller.signal);
       const first = result.addedSongs.find((song: any) => song.file && song.url);
       const state = useStore.getState();
@@ -156,8 +175,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    canAcceptDropsRef.current = !isAuthBlocked;
-  }, [isAuthBlocked]);
+    canAcceptDropsRef.current = !isAuthBlocked && !geminiImport;
+  }, [isAuthBlocked, geminiImport]);
 
   useEffect(() => {
     if (!authEnabled) return;
@@ -331,6 +350,8 @@ export default function App() {
   return (
     <>
       <PlayerView />
+      {geminiImport && <GeminiImportDialog draft={geminiImport} onClose={() => setGeminiImport(null)}
+        onImported={message => { setGeminiImport(null); setMediaImportMessage(message); }} />}
       {!isAuthBlocked && <>
         <button className="media-picker" type="button" disabled={mediaImportBusy} onClick={() => mediaInputRef.current?.click()}>
           {mediaImportBusy ? "Importing…" : "Add songs"}

@@ -82,6 +82,32 @@ This writes `audio.m4a` and `timing.json` plus diagnostic OCR/ASR JSON. Rename t
 
 See [the visualizer/import audit](docs/visualizer-import-audit.md) for the verified behavior and remaining release blockers.
 
+## Import Gemini lyrics made elsewhere
+
+Drop Gemini's word-timing `.json` or `.txt` export onto the app, or select it using **Add songs**. A single JSON code block is accepted too. The **Import Gemini lyrics** panel converts locally, with no Gemini/ElevenLabs request or API key. Select a library song or add its audio. You can also select a Suno MP4 in the local app: only its audio is extracted, with no OCR, Python or Whisper required. Restart the local server after updating to enable this audio-only path.
+
+For the original Gemini format (`[{"start": 4.15, "end": 5.8, "text": "Silencio", "uncertain": false}, ...]`), paste the original Suno lyrics into the phrase guide. Spanish outside parentheses and English inside parentheses identify phrases and their display lanes. Section headings are ignored. An accompanying `.txt` phrase guide can be selected together with the Gemini JSON. The guide never supplies missing sung words or timestamps. Add improvised phrases as `[es] La frase real` or `[en] The actual phrase` if they were not in the original prompt. Unmatched or ambiguous phrases stop conversion and identify the entry that needs a label.
+
+For future Gemini exports, ask it to include language and phrase groups with the timings; then the JSON alone supplies everything needed for conversion:
+
+```json
+{
+  "title": "My song",
+  "phrases": [
+    { "language": "es", "words": [
+      { "text": "Hola", "start": 1.1, "end": 2.0, "uncertain": false }
+    ] },
+    { "language": "en", "words": [
+      { "text": "Hello", "start": 2.1, "end": 3.0, "uncertain": false }
+    ] }
+  ]
+}
+```
+
+A flat array (or `{ "words": [...] }`) also works with `language: "es" | "en"` and a `phrase_id` on every word. Use distinct phrase IDs for each performed occurrence, including repeated choruses. Without phrase IDs, labeled words use inferred phrase breaks for layout; the preview reports this. Numeric seconds and `MM:SS.sss` / `HH:MM:SS.sss` timestamps are accepted. Include every actually performed Spanish and English word, including whispers and ad-libs; do not translate or invent unheard lyrics.
+
+Choose **Download timing JSON** for a portable player document, or **Use lyrics** to attach it to the chosen song. Applying checks timings against the audio duration; downloading without audio cannot make that check. Spanish and English retain independent word timings, overlapping cues are combined, and combined entries such as `en la` keep their supplied span. Punctuation-only placeholders remain in review notes rather than lyrics. Invalid/zero-length timings are rejected instead of being invented or silently dropped. Import one Gemini song at a time, review playback, and use **Export library** to transfer finished songs to your phone. Existing player JSON, LRC, SRT and VTT imports continue to work.
+
 ## Production Build
 
 ```bash

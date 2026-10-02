@@ -29,12 +29,12 @@ export function registerLocalSuno(app: Express) {
     next();
   });
   app.get("/api/local/capabilities", (_req, res) => {
-    res.json({ suno: existsSync(python) && existsSync(model), busy });
+    res.json({ suno: existsSync(python) && existsSync(model), audioExtraction: true, busy });
   });
   // Reserve the single worker before buffering the upload, including concurrent requests.
   app.post("/api/local/suno", (req, res, next) => {
     if (busy) { res.status(409).json({ error: "A local video import is already running." }); return; }
-    if (!existsSync(python) || !existsSync(model)) {
+    if (req.query.audioOnly !== "1" && (!existsSync(python) || !existsSync(model))) {
       res.status(503).json({ error: "Configure LOCAL_LYRICS_PYTHON and LOCAL_WHISPER_MODEL for local Suno import." }); return;
     }
     if (req.headers["x-local-import"] !== "suno") { res.sendStatus(400); return; }
@@ -51,10 +51,15 @@ export function registerLocalSuno(app: Express) {
       const input = path.join(directory, "source.mp4");
       await writeFile(input, req.body);
       req.body = undefined;
+      const audioOnly = req.query.audioOnly === "1";
       await new Promise<void>((resolve, reject) => {
-        const child = spawn(python, [path.resolve("scripts/visual_lyrics_extractor.py"), input,
-          "--output-dir", directory, "--model", model, "--ffmpeg", process.env.FFMPEG_PATH || ffmpeg || "ffmpeg"], {
-          windowsHide: true, signal: controller.signal, timeout: 15 * 60_000,
+        const ffmpegPath = process.env.FFMPEG_PATH || ffmpeg || "ffmpeg";
+        const command = audioOnly ? ffmpegPath : python;
+        const args = audioOnly
+          ? ["-nostdin", "-hide_banner", "-loglevel", "error", "-i", input, "-map", "0:a:0", "-vn", "-c:a", "aac", "-b:a", "192k", path.join(directory, "audio.m4a")]
+          : [path.resolve("scripts/visual_lyrics_extractor.py"), input, "--output-dir", directory, "--model", model, "--ffmpeg", ffmpegPath];
+        const child = spawn(command, args, {
+          windowsHide: true, signal: controller.signal, timeout: (audioOnly ? 3 : 15) * 60_000,
           env: { ...process.env, PYTHONIOENCODING: "utf-8" }, stdio: ["ignore", "pipe", "pipe"],
         });
         let diagnostic = "";
@@ -62,9 +67,9 @@ export function registerLocalSuno(app: Express) {
         child.stdout.on("data", () => {});
         child.once("error", reject);
         child.once("close", code => code === 0 ? resolve() : reject(new Error(
-          `Local lyric extraction failed. ${diagnostic.split(/\r?\n/).filter(Boolean).slice(-1)[0] || "Check Python dependencies and the Whisper model."}`)));
+          `Local ${audioOnly ? "audio" : "lyric"} extraction failed. ${diagnostic.split(/\r?\n/).filter(Boolean).slice(-1)[0] || "Check local media dependencies."}`)));
       });
-      const timing = JSON.parse(await readFile(path.join(directory, "timing.json"), "utf8"));
+      const timing = audioOnly ? undefined : JSON.parse(await readFile(path.join(directory, "timing.json"), "utf8"));
       const audio = await readFile(path.join(directory, "audio.m4a"));
       res.json({ timing, audioBase64: audio.toString("base64"), mimeType: "audio/mp4" });
     } catch (error) {

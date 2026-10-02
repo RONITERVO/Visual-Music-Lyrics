@@ -3,10 +3,16 @@
 
 import { createId, looksLikeJson, looksLikeLooseJson } from "./utils";
 import { Segment } from "../types";
+import { convertGeminiJson, isGeminiWordJson } from "./geminiImport";
 
 export function parseTranscript(text: string, extension: string): { kind: "timed", title?: string, segments: Segment[] } {
   const trimmed = text.trim(); 
   if (!trimmed) return { kind: "timed", segments: [] };
+
+  if (isGeminiWordJson(trimmed)) {
+      const converted = convertGeminiJson(trimmed);
+      return parseJsonTranscript(JSON.stringify(converted));
+  }
   
   if (extension === "json" || looksLikeJson(trimmed) || looksLikeLooseJson(trimmed)) {
       return parseJsonTranscript(trimmed);
@@ -107,6 +113,7 @@ function parseJsonTranscript(text: string): { kind: "timed", title?: string, seg
           let words: any[] = [];
           if (Array.isArray(item.words)) {
               words = item.words.map((w: any) => ({
+                  ...w,
                   value: String(w.value ?? w.word ?? w.text ?? "").trim(),
                   word: String(w.value ?? w.word ?? w.text ?? "").trim(),
                   start: Number(w.start ?? w.startTime ?? w.t0),
