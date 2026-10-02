@@ -1,0 +1,38 @@
+Analyze the actual audio in the attached Suno music video and produce a complete, word-timed transcription for bilingual lyric playback.
+
+Transcribe the performed song, including every audible Spanish and English vocal: lead singing, quiet backing vocals, whispered or spoken words, repeated phrases, and ad-libs.
+
+English often follows Spanish, but may overlap it. Capture what actually happens; do not force the languages into non-overlapping time slots. Do not generate English translations that are not audible.
+
+Use the video captions as a reference for wording and phrase boundaries. Determine vocal timing from the audio, not from when a caption appears. If captions or supplied lyrics disagree with the performance, follow the performance.
+
+TIMING
+- Use numeric seconds measured from the beginning of the attached video, preserving its original timeline.
+- Identify fractional-second word onsets and endings from the audio.
+- Every entry must satisfy 0 <= start < end <= media duration.
+- Do not round everything to whole seconds, distribute words evenly, snap timings to a regular grid, or merely append decimals to estimates.
+- Preserve actual gaps, sustained words, and overlapping voices.
+- Mark uncertain wording OR uncertain timing with uncertain: true.
+- Prefer one entry per word. If adjacent words cannot be separated reliably, retain the short combined span and mark it uncertain instead of inventing a boundary.
+- For an audible but unintelligible vocal span, use text: "..." with uncertain: true and its supported time interval. Do not invent words.
+- Do not create entries for silence or instrumental music.
+
+LANGUAGES AND PHRASES
+- Label Spanish words with language: "es" and English words with language: "en".
+- Give every short sung line or ad-lib its own phrase_id, such as "p001".
+- All words in that phrase share its phrase_id.
+- Spanish and English phrases must have separate IDs.
+- Each repeated occurrence gets a NEW ID, even if its words repeat.
+- Do not group an entire verse into one phrase.
+- Keep words in their performed order within each phrase.
+
+OUTPUT
+Return only one complete JSON array. Each word entry must contain:
+text, start, end, language, phrase_id, uncertain.
+
+Illustrative format only; do not reuse this example's word or timings:
+{"text":"Hola","start":1.12,"end":1.54,"language":"es","phrase_id":"p001","uncertain":false}
+
+Cover the entire song through the final audible vocal. Before returning, check for missing English responses, omitted repeated sections, invalid timings, and reused phrase IDs.
+
+If you cannot access or analyze the attached audio, say so and stop. Do not simulate an expected transcription.

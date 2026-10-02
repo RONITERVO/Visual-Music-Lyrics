@@ -9,3 +9,9 @@ youtubeCaptions/
 .env*
 !.env.example
 .firebase/
+.venv-lyrics/
+.artifacts/
+__pycache__/
+.cache/
+test-results/
+playwright-report/

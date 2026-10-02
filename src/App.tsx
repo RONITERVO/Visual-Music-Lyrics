@@ -1,12 +1,15 @@
 /* SPDX-FileCopyrightText: 2026 Roni Tervo
  * SPDX-License-Identifier: Apache-2.0 */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { LogIn, LogOut } from "lucide-react";
 import { GraphiteDesignSystem } from "./lib/graphics/GraphiteEngine";
 import { useStore } from "./lib/store";
 import { PlayerView } from "./components/PlayerView";
-import { getDroppedFiles } from "./lib/fileSystem";
+import { getDroppedFiles, TRANSCRIPT_EXTENSIONS, AUDIO_EXTENSIONS } from "./lib/fileSystem";
+import { getExtension } from "./lib/utils";
+import { isGeminiWordJson } from "./lib/geminiImport";
+import { GeminiImportDialog, type GeminiImportDraft } from "./components/GeminiImportDialog";
 import { handleGlobalDroppedFiles, loadSongSegments } from "./lib/fileHandlers";
 import { restorePersistedLibrary, persistLibrary, loadSettings, saveSettings } from "./lib/persistence";
 import { fetchBackendHealth, shouldUseHostedBackend } from "./lib/api";
@@ -113,6 +116,9 @@ export default function App() {
   const [authReady, setAuthReady] = useState(!authEnabled);
   const [authUser, setAuthUser] = useState<FirebaseUser | null>(null);
   const [authError, setAuthError] = useState("");
+  const [isAuthBypassed, setIsAuthBypassed] = useState(() => {
+    return typeof window !== "undefined" && window.localStorage.getItem("local_auth_bypass") === "true";
+  });
   const [isDragging, setIsDragging] = useState(false);
   const [backendWarmState, setBackendWarmState] = useState<"warming" | "ready" | "error">(
     backendSessionEnabled ? "warming" : "ready"
@@ -121,12 +127,57 @@ export default function App() {
     backendSessionEnabled ? getBackendWarmMessage(1) : ""
   );
   const [backendWarmNonce, setBackendWarmNonce] = useState(0);
-  const canAcceptDropsRef = useRef(!backendSessionEnabled);
-  const isAuthBlocked = authEnabled && (!authReady || !authUser);
+  const canAcceptDropsRef = useRef(true);
+  const mediaInputRef = useRef<HTMLInputElement>(null);
+  const mediaAbortRef = useRef<AbortController | null>(null);
+  const [mediaImportMessage, setMediaImportMessage] = useState("");
+  const [mediaImportBusy, setMediaImportBusy] = useState(false);
+  const [geminiImport, setGeminiImport] = useState<GeminiImportDraft | null>(null);
+  const isAuthBlocked = authEnabled && !isAuthBypassed && (!authReady || !authUser);
+
+  const importMedia = useCallback(async (files: File[]) => {
+    if (!files.length || mediaAbortRef.current || !canAcceptDropsRef.current) return;
+    const controller = new AbortController();
+    mediaAbortRef.current = controller;
+    setMediaImportBusy(true);
+    const hasVideo = files.some(file => file.type.startsWith("video/") || /\.(mp4|mkv|mov)$/i.test(file.name));
+    setMediaImportMessage(hasVideo ? "Importing video and checking supplied lyric timings…" : "Adding songs and lyrics…");
+    try {
+      const documents = await Promise.all(files.filter(file => TRANSCRIPT_EXTENSIONS.has(getExtension(file.name)))
+        .map(async file => {
+          if (file.size > 5 * 1024 * 1024) throw new Error("Timing files must be under 5 MB.");
+          return { file, text: await file.text() };
+        }));
+      const gemini = documents.filter(item => isGeminiWordJson(item.text));
+      if (gemini.length > 1) throw new Error("Import one Gemini song at a time so you can choose its audio and phrase guide.");
+      if (gemini.length) {
+        const guides = documents.filter(item => item !== gemini[0] && /^(txt|text|lyrics)$/.test(getExtension(item.file.name)));
+        setGeminiImport({ text: gemini[0].text, name: gemini[0].file.name, lyrics: guides.length === 1 ? guides[0].text : "",
+          media: files.filter(file => file.type.startsWith("audio/") || file.type.startsWith("video/") || AUDIO_EXTENSIONS.has(getExtension(file.name)) || getExtension(file.name) === "mov"),
+        });
+        setMediaImportMessage("");
+        return;
+      }
+      const result = await handleGlobalDroppedFiles(files, controller.signal);
+      const first = result.addedSongs.find((song: any) => song.file && song.url);
+      const state = useStore.getState();
+      const id = first?.id || state.selectedAudioId || state.audioFiles[0]?.id;
+      if (id) await loadSongSegments(id);
+      setMediaImportMessage(result.alignedVideos
+        ? "Audio and bilingual lyrics added. Review the machine-aligned text and timing before publishing."
+        : result.reusedVideoTimings ? "Audio and supplied lyrics added. OCR and Whisper were skipped."
+        : result.audioFiles.length || result.transcriptFiles.length ? "Files added." : "Choose audio, a Suno video, or a timing JSON, LRC, SRT or VTT file.");
+    } catch (error) {
+      setMediaImportMessage(controller.signal.aborted ? "Import canceled." : getBackendErrorMessage(error));
+    } finally {
+      mediaAbortRef.current = null;
+      setMediaImportBusy(false);
+    }
+  }, []);
 
   useEffect(() => {
-    canAcceptDropsRef.current = (!backendSessionEnabled || backendWarmState === "ready") && !isAuthBlocked;
-  }, [backendSessionEnabled, backendWarmState, isAuthBlocked]);
+    canAcceptDropsRef.current = !isAuthBlocked && !geminiImport;
+  }, [isAuthBlocked, geminiImport]);
 
   useEffect(() => {
     if (!authEnabled) return;
@@ -150,6 +201,10 @@ export default function App() {
 
   const handleSignOut = async () => {
     setAuthError("");
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem("local_auth_bypass");
+    }
+    setIsAuthBypassed(false);
     try {
       await signOutFirebase();
     } catch (error: any) {
@@ -274,11 +329,7 @@ export default function App() {
       
       if (!e.dataTransfer) return;
       const files = await getDroppedFiles(e.dataTransfer);
-      const result = await handleGlobalDroppedFiles(files);
-      const firstPlayable = result.addedSongs.find((song: any) => song.file && song.url);
-      if (firstPlayable) {
-        await loadSongSegments(firstPlayable.id);
-      }
+      await importMedia(files);
     };
 
     window.addEventListener("dragenter", handleDragEnter);
@@ -287,6 +338,7 @@ export default function App() {
     window.addEventListener("drop", handleDrop);
 
     return () => {
+      mediaAbortRef.current?.abort();
       unsub();
       engine.destroy();
       window.removeEventListener("dragenter", handleDragEnter);
@@ -298,7 +350,23 @@ export default function App() {
 
   return (
     <>
-      <PlayerView />
+      <PlayerView onImportGemini={!isAuthBlocked && !mediaImportBusy ? () => setGeminiImport({ text: "", name: "Gemini lyrics", lyrics: "", media: [] }) : undefined} />
+      {geminiImport && <GeminiImportDialog draft={geminiImport} onClose={() => setGeminiImport(null)}
+        onImported={message => { setGeminiImport(null); setMediaImportMessage(message); }} />}
+      {!isAuthBlocked && <>
+        <button className="media-picker" type="button" disabled={mediaImportBusy} onClick={() => mediaInputRef.current?.click()}>
+          {mediaImportBusy ? "Importing…" : "Add songs"}
+        </button>
+        <input ref={mediaInputRef} hidden type="file" multiple aria-label="Add audio, Suno video or lyric timing files"
+          accept="audio/*,video/mp4,video/webm,.mkv,.mov,.json,.lrc,.srt,.vtt,.txt"
+          onChange={event => { const files = Array.from(event.currentTarget.files || []); event.currentTarget.value = ""; void importMedia(files); }} />
+      </>}
+      {mediaImportMessage && <div role="status" className="media-import-status">
+        {mediaImportMessage}
+        <button type="button" onClick={() => mediaImportBusy ? mediaAbortRef.current?.abort() : setMediaImportMessage("")}>
+          {mediaImportBusy ? "Cancel" : "Dismiss"}
+        </button>
+      </div>}
 
       {authEnabled && authReady && authUser && (
         <div className="fixed right-3 top-3 z-[90] flex max-w-[min(420px,calc(100vw-1.5rem))] items-center gap-2 rounded-[8px] border border-ink-graphite/15 bg-paper-light/95 px-3 py-2 text-ink-graphite shadow-lg backdrop-blur-md">
@@ -324,7 +392,7 @@ export default function App() {
         </div>
       )}
 
-      {backendSessionEnabled && backendWarmState !== "ready" && (
+      {backendSessionEnabled && !isAuthBypassed && backendWarmState !== "ready" && (
         <div className="fixed inset-0 z-[110] grid place-items-center bg-black/65 backdrop-blur-sm">
           <div className="grid w-[min(460px,92vw)] gap-4 rounded-2xl border border-ink-blueprint/30 bg-paper-light/95 p-6 text-center text-ink-graphite shadow-2xl">
             <div className="mx-auto h-11 w-11 rounded-full border-4 border-ink-blueprint/20 border-t-ink-blueprint animate-spin" />
@@ -342,8 +410,8 @@ export default function App() {
               </span>
             </div>
 
-            {backendWarmState === "error" && (
-              <div className="flex justify-center">
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              {backendWarmState === "error" && (
                 <button
                   type="button"
                   className="rounded-full border border-ink-blueprint/30 px-4 py-2 font-body text-[0.95rem] text-ink-blueprint transition hover:bg-ink-blueprint/10"
@@ -351,8 +419,20 @@ export default function App() {
                 >
                   Retry backend wake-up
                 </button>
-              </div>
-            )}
+              )}
+              <button
+                type="button"
+                className="rounded-full bg-ink-blueprint/15 px-4 py-2 font-body text-[0.95rem] text-ink-blueprint transition hover:bg-ink-blueprint/25"
+                onClick={() => {
+                  setIsAuthBypassed(true);
+                  if (typeof window !== "undefined") {
+                    window.localStorage.setItem("local_auth_bypass", "true");
+                  }
+                }}
+              >
+                Continue Offline / Local Mode
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -368,7 +448,7 @@ export default function App() {
             </span>
             <button
               type="button"
-              className="mx-auto inline-flex items-center justify-center gap-2 rounded-[8px] bg-ink-blueprint px-4 py-2 font-body text-[0.96rem] text-paper-light transition hover:bg-ink-blueprint/90"
+              className="mx-auto inline-flex items-center justify-center gap-2 rounded-[8px] bg-ink-blueprint px-4 py-2 font-body text-[0.96rem] text-paper-light shadow-md transition hover:bg-ink-blueprint/90 active:scale-95"
               onClick={handleSignIn}
               disabled={!authReady}
             >
@@ -380,15 +460,32 @@ export default function App() {
                 {authError}
               </span>
             )}
+            <div className="flex flex-col items-center gap-1 border-t border-ink-graphite/10 pt-3">
+              <button
+                type="button"
+                className="font-body text-[0.88rem] font-bold text-ink-blueprint underline transition hover:text-ink-graphite active:scale-95"
+                onClick={() => {
+                  if (typeof window !== "undefined") {
+                    window.localStorage.setItem("local_auth_bypass", "true");
+                  }
+                  setIsAuthBypassed(true);
+                }}
+              >
+                Continue in Local / Offline Mode
+              </button>
+              <span className="font-body text-[0.78rem] text-ink-graphite/50">
+                Play local songs, drag & drop media & visual lyrics without sign-in.
+              </span>
+            </div>
           </div>
         </div>
       )}
 
       {isDragging && (
         <div className="fixed inset-0 z-[100] grid place-items-center bg-black/60 backdrop-blur-sm pointer-events-none">
-          <div className="w-[min(400px,90vw)] min-h-[200px] p-8 grid place-items-center text-center bg-transparent drop-card-fx rounded-xl border-2 border-dashed border-ink-blueprint">
-            <strong className="font-display text-[3rem] text-ink-blueprint">Drop audio</strong>
-            <span className="text-paper-light font-body text-xl">The visualizer will take it from here</span>
+          <div className="w-[min(440px,90vw)] min-h-[200px] p-8 grid place-items-center text-center bg-paper-light/90 shadow-2xl rounded-2xl border-2 border-dashed border-ink-blueprint">
+            <strong className="font-display text-[2.5rem] text-ink-blueprint leading-tight">Drop media or lyrics</strong>
+            <span className="text-ink-graphite-light font-body text-base mt-2">Audio, video, or timing JSON will be synced immediately</span>
           </div>
         </div>
       )}

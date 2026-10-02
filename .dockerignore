@@ -8,3 +8,5 @@ coverage
 !.env.example
 *.log
 youtubeCaptions
+.venv-lyrics
+.artifacts
