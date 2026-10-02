@@ -92,8 +92,13 @@ export async function createVideoRenderer(options: VideoRenderOptions) {
       }
       if (progress > 0) {
         context.globalAlpha = alpha;
-        context.beginPath(); context.rect(word.x - layout.size * .12, word.y - layout.size * .2,
-          word.width * progress + layout.size * .12, layout.size * 1.6); context.clip();
+        // Handwritten strokes extend beyond the advance width used for layout.
+        // Once written, omit the mask so strokes and reflection blur stay intact.
+        if (progress < 1) {
+          const inkPadding = layout.size * (sketch ? .22 : .12) * progress;
+          context.beginPath(); context.rect(word.x - layout.size * .12, word.y - layout.size * .2,
+            word.width * progress + layout.size * .12 + inkPadding, layout.size * 1.6); context.clip();
+        }
         context.fillText(word.value, word.x, word.y);
         if (!sketch && active) context.fillRect(word.x, word.y + layout.size * 1.03, word.width * progress, layout.size * .055);
       }

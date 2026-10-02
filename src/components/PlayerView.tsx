@@ -117,6 +117,7 @@ function renderTimedWords(segment: Segment, currentTime: number, onSeek: (second
           style={{
             "--word-progress": `${progress * 100}%`,
             "--word-hide": `${(1 - progress) * 100}%`,
+            "--word-reveal": progress,
             "--word-index": index,
           } as React.CSSProperties}
         >
@@ -143,6 +144,7 @@ function renderProgressiveText(text: string, start: number, end: number, current
         className={`music-lyrics-progressive-word ${progress > 0 ? "written" : "waiting"}`}
         style={{
           "--word-hide": `${(1 - progress) * 100}%`,
+          "--word-reveal": progress,
           "--word-index": index,
         } as React.CSSProperties}
       >

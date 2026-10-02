@@ -383,7 +383,8 @@ button:disabled {
 }
 
 .music-lyrics-word-ink {
-  clip-path: inset(-0.18em var(--word-hide, 100%) -0.22em -0.12em);
+  /* Reveal the ink overhang too, without adding layout width or changing wraps. */
+  clip-path: inset(-0.18em calc(var(--word-hide, 100%) - var(--word-reveal, 0) * 0.12em) -0.22em -0.12em);
   filter: blur(0);
   transition: clip-path 55ms linear, opacity 0.16s ease-out, filter 0.16s ease-out, transform 0.16s ease-out;
   will-change: clip-path, transform;
@@ -499,7 +500,7 @@ html[data-visualizer-theme="signal-bloom"] button[aria-label="Open library and p
 .theme-sketchbook .music-lyrics-translation button,
 .theme-sketchbook .music-lyrics-progressive-word { padding: 0; }
 .theme-sketchbook .music-lyrics-word-ink {
-  clip-path: inset(-0.22em var(--word-hide, 100%) -0.26em -0.22em);
+  clip-path: inset(-0.22em calc(var(--word-hide, 100%) - var(--word-reveal, 0) * 0.22em) -0.26em -0.22em);
   transform-origin: left center;
   transition: clip-path 70ms linear, opacity 160ms ease-out, filter 160ms ease-out, transform 160ms ease-out;
 }
