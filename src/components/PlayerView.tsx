@@ -637,6 +637,7 @@ function SearchOverlay({
   onClose,
   onExportLibrary,
   onExportVideo,
+  onImportGemini,
   onImportLibrary,
   onClearAllData,
   onSelectSong,
@@ -681,6 +682,7 @@ function SearchOverlay({
   onClose: () => void;
   onExportLibrary: () => void;
   onExportVideo: () => void;
+  onImportGemini?: () => void;
   onImportLibrary: () => void;
   onClearAllData: () => void;
   onSelectSong: (songId: string) => void;
@@ -938,6 +940,8 @@ function SearchOverlay({
             <X size={18} />
           </ControlIconButton>
         </div>
+        <button type="button" className="text-left font-body text-[0.9rem] text-ink-blueprint underline underline-offset-2 sm:col-span-2"
+          disabled={!onImportGemini || isLibraryTransferBusy} onClick={onImportGemini}>Gemini lyrics · prompt &amp; import</button>
       </div>
 
       {libraryTransferStatus && (
@@ -1576,7 +1580,7 @@ function getTimedWordReveal(word: TimedDrawWord, currentTime: number) {
   return Math.max(0, Math.min(1, revealUnits / word.letters.length));
 }
 
-export function PlayerView() {
+export function PlayerView({ onImportGemini }: { onImportGemini?: () => void }) {
   const [videoExportOpen, setVideoExportOpen] = useState(false);
   const [videoExportRunning, setVideoExportRunning] = useState(false);
   const selectedAudioId = useStore((state) => state.selectedAudioId);
@@ -2728,6 +2732,7 @@ export function PlayerView() {
         onClose={() => setIsSearchOpen(false)}
         onExportLibrary={handleExportLibrary}
         onExportVideo={() => { getAudioElement().pause(); setVideoExportOpen(true); }}
+        onImportGemini={onImportGemini}
         onImportLibrary={handlePickImportLibrary}
         onClearAllData={handleClearAllData}
         onSelectSong={handleSelectSong}

@@ -349,7 +349,7 @@ export default function App() {
 
   return (
     <>
-      <PlayerView />
+      <PlayerView onImportGemini={!isAuthBlocked && !mediaImportBusy ? () => setGeminiImport({ text: "", name: "Gemini lyrics", lyrics: "", media: [] }) : undefined} />
       {geminiImport && <GeminiImportDialog draft={geminiImport} onClose={() => setGeminiImport(null)}
         onImported={message => { setGeminiImport(null); setMediaImportMessage(message); }} />}
       {!isAuthBlocked && <>

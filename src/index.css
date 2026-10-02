@@ -573,6 +573,11 @@ html[data-visualizer-theme="signal-bloom"] button[aria-label="Open library and p
 .gemini-import-dialog :is(select, textarea) { background: #fff9; border: 1px solid #7776; border-radius: 8px; padding: 9px; }
 .gemini-import-dialog textarea { resize: vertical; }
 .gemini-import-dialog summary { cursor: pointer; overflow-wrap: anywhere; }
+.gemini-prompt-guide { margin-top: 14px; padding: 12px; border: 1px solid #315ba944; border-radius: 8px; }
+.gemini-prompt-guide ol { list-style: decimal; padding-left: 20px; margin-top: 10px; }
+.gemini-prompt-guide li { margin: 7px 0; }
+.gemini-prompt-guide details { margin-top: 12px; }
+.gemini-prompt-guide textarea { margin-top: 8px; }
 .gemini-import-note { font-size: 13px; color: #625c51; }
 .gemini-import-error { background: #a22a180b; border-left: 3px solid #a22a18; padding: 10px; overflow-wrap: anywhere; }
 .gemini-import-preview { margin-top: 14px; padding: 12px; background: #1d634310; border-radius: 8px; }

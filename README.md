@@ -84,6 +84,13 @@ See [the visualizer/import audit](docs/visualizer-import-audit.md) for the verif
 
 ## Import Gemini lyrics made elsewhere
 
+For a fresh song, open **Library and playback controls → Gemini lyrics · prompt & import → Copy Gemini prompt**. The full reusable prompt is also saved in [gemini-suno-word-timings.txt](src/assets/prompts/gemini-suno-word-timings.txt).
+
+1. Start a fresh Gemini chat for each song and attach the original Suno MP4.
+2. Paste the copied prompt with the video and run it in Gemini. The Amor Digital reference setup was **Gemini 3.1 Pro Preview**, **High** thinking, temperature **1**, and default media resolution.
+3. Paste the complete JSON response into **Gemini JSON output** in the app. Alternatively, save the response as `.json` / `.txt`, close the panel, and choose it with **Add songs**.
+4. Select the matching audio (or a local Suno video), choose **Use lyrics**, and listen through both languages before exporting. With `language` and `phrase_id` on every word, no phrase guide is needed.
+
 Drop Gemini's word-timing `.json` or `.txt` export onto the app, or select it using **Add songs**. A single JSON code block is accepted too. The **Import Gemini lyrics** panel converts locally, with no Gemini/ElevenLabs request or API key. Select a library song or add its audio. You can also select a Suno MP4 in the local app: only its audio is extracted, with no OCR, Python or Whisper required. Restart the local server after updating to enable this audio-only path.
 
 For the original Gemini format (`[{"start": 4.15, "end": 5.8, "text": "Silencio", "uncertain": false}, ...]`), paste the original Suno lyrics into the phrase guide. Spanish outside parentheses and English inside parentheses identify phrases and their display lanes. Section headings are ignored. An accompanying `.txt` phrase guide can be selected together with the Gemini JSON. The guide never supplies missing sung words or timestamps. Add improvised phrases as `[es] La frase real` or `[en] The actual phrase` if they were not in the original prompt. Unmatched or ambiguous phrases stop conversion and identify the entry that needs a label.

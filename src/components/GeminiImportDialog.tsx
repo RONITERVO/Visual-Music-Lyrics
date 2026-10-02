@@ -8,6 +8,7 @@ import { saveSongTiming } from "../lib/timing";
 import { extractLocalSunoAudio } from "../lib/localSuno";
 import { useStore } from "../lib/store";
 import { getBaseName } from "../lib/utils";
+import geminiPrompt from "../assets/prompts/gemini-suno-word-timings.txt?raw";
 
 export interface GeminiImportDraft {
   text: string;
@@ -51,15 +52,28 @@ export function GeminiImportDialog({ draft, onClose, onImported }: {
   const [target, setTarget] = useState(draft.media.length === 1 ? "file:0" : useStore.getState().selectedAudioId || "");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [promptMessage, setPromptMessage] = useState("");
+  const [showPrompt, setShowPrompt] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const controller = useRef<AbortController | null>(null);
   const file = target.startsWith("file:") ? media[Number(target.slice(5))] : undefined;
   const song = songs.find(s => s.id === target);
   const title = getBaseName(file?.name || song?.name || draft.name);
   const conversion = useMemo(() => {
+    if (!text.trim()) return { result: null, error: "" };
     try { return { result: convertGeminiJson(text, { lyrics, title }), error: "" }; }
     catch (error) { return { result: null, error: (error as Error).message }; }
   }, [text, lyrics, title]);
+
+  const copyPrompt = async () => {
+    try {
+      await navigator.clipboard.writeText(geminiPrompt.trim());
+      setPromptMessage("Prompt copied. Paste it with your video in a fresh Gemini chat.");
+    } catch {
+      setShowPrompt(true);
+      setPromptMessage("Clipboard unavailable. Select the full prompt below and copy it manually.");
+    }
+  };
 
   useEffect(() => {
     dialog.current?.showModal();
@@ -106,6 +120,22 @@ export function GeminiImportDialog({ draft, onClose, onImported }: {
       <button type="button" aria-label="Close Gemini import" disabled={busy} onClick={onClose}>×</button>
     </div>
     <p>Turn your Gemini export into Spanish above and sung English below. Conversion stays on this device and uses no API credits.</p>
+    <details className="gemini-prompt-guide" open={!draft.text.trim() || undefined}>
+      <summary>Gemini prompt and quick instructions</summary>
+      <ol>
+        <li>Start a fresh Gemini chat for each song and attach the original Suno MP4.</li>
+        <li>Copy the prompt below, paste it with the video, and run it in Gemini.</li>
+        <li>Paste the complete JSON response into <strong>Gemini JSON output</strong> below. Or save it as .json / .txt, close this panel, and select it with <strong>Add songs</strong>.</li>
+        <li>Choose the matching audio (or a Suno video in the local app), select <strong>Use lyrics</strong>, and listen through to check both languages before exporting.</li>
+      </ol>
+      <p className="gemini-import-note">Amor Digital reference setup: Gemini 3.1 Pro Preview · High thinking · temperature 1 · default media resolution. With language and phrase_id on every word, the phrase guide is optional.</p>
+      <div className="gemini-import-actions"><button type="button" onClick={() => void copyPrompt()}>Copy Gemini prompt</button></div>
+      {promptMessage && <p role="status" className="gemini-import-note">{promptMessage}</p>}
+      <details open={showPrompt} onToggle={event => setShowPrompt(event.currentTarget.open)}>
+        <summary>Full prompt</summary>
+        <textarea aria-label="Gemini transcription prompt" readOnly value={geminiPrompt.trim()} rows={10} spellCheck={false} />
+      </details>
+    </details>
     <fieldset disabled={busy}>
       <label>Song
         <select aria-label="Song" value={target} onChange={event => setTarget(event.target.value)}>
@@ -123,9 +153,10 @@ export function GeminiImportDialog({ draft, onClose, onImported }: {
           }} />
       </label>
       {song?.timing && <p className="gemini-import-note">Using these lyrics will replace the current timings for {song.name}.</p>}
-      <details>
-        <summary>Gemini JSON · {draft.name}</summary>
-        <label>Gemini JSON output<textarea value={text} onChange={event => setText(event.target.value)} rows={7} spellCheck={false} /></label>
+      <details open={!draft.text.trim() || undefined}>
+        <summary>Gemini JSON{draft.text ? ` · ${draft.name}` : " output"}</summary>
+        <label>Gemini JSON output<textarea value={text} onChange={event => setText(event.target.value)} rows={7} spellCheck={false}
+          placeholder="Paste the complete JSON array from Gemini here." /></label>
       </details>
       <label>Suno lyrics / phrase guide (optional for labeled JSON)
         <textarea value={lyrics} onChange={event => setLyrics(event.target.value)} rows={6}
