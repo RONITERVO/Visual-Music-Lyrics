@@ -51,9 +51,22 @@ export interface Segment {
   role: string;
   kind?: string;
   words: any[];
+  translationWords?: MusicLyricWord[];
+  translationTiming?: "sung";
+  timingQuality?: string;
   characterTimeline?: any[];
   order: number;
   source?: string;
   translationSource?: string;
   language_code?: string;
 }
+
+export interface MusicLyricWord {
+  value: string;
+  start: number;
+  end: number;
+  uncertain?: boolean;
+  sourceIndex?: number;
+}
+
+export type MusicLyricTheme = "sketchbook" | "signal-bloom";

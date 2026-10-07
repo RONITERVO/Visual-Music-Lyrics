@@ -17,6 +17,7 @@ function getTimingSource(text: string, fallback = SCRIBE_SOURCE) {
 }
 
 function getTimingFileSuffix(source: string) {
+  if (/gemini-import/i.test(source)) return "gemini";
   if (/youtube-captions/i.test(source)) return "youtube-captions";
   return "scribe";
 }

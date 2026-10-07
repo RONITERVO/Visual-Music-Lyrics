@@ -3,6 +3,23 @@
 
 import { buildApiUrl, getAuthorizedApiRequestHeaders } from "./api";
 
+export interface ElevenLabsBillingAvailability {
+  purchasesEnabled: boolean;
+  message: string;
+}
+
+export async function fetchElevenLabsBillingAvailability(): Promise<ElevenLabsBillingAvailability> {
+  const response = await fetch(buildApiUrl("/api/billing/elevenlabs/status"), { cache: "no-store" });
+  const data = await response.json().catch(() => null);
+  if (!response.ok || typeof data?.purchasesEnabled !== "boolean") {
+    throw new Error("Purchase availability could not be verified.");
+  }
+  return {
+    purchasesEnabled: data.purchasesEnabled === true,
+    message: String(data.message || ""),
+  };
+}
+
 export interface ElevenLabsEntitlement {
   uid: string;
   elevenLabsPaidSeconds: number;

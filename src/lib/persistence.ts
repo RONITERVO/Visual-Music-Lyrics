@@ -5,6 +5,7 @@ import { useStore } from "./store";
 import type { GlobalState } from "./store";
 import { clearAllSongsFromDb, getAllSongsFromDb, storeSongInDb } from "./db";
 import { getBrowserLanguageCode } from "./utils";
+import { loadSongSegments } from "./fileHandlers";
 
 const SETTINGS_KEYS = {
     sourceLanguage: "living-sketchbook:source-language",
@@ -71,6 +72,9 @@ export async function restorePersistedLibrary() {
             }
         }
         useStore.setState({ audioFiles });
+        if (!useStore.getState().selectedAudioId && audioFiles[0]) {
+            await loadSongSegments(audioFiles[0].id);
+        }
     } catch(e) {
         console.error("Failed to restore from IDB", e);
     }

@@ -23,7 +23,7 @@ const firebaseConfig = {
 };
 
 export function isFirebaseConfigured() {
-  if (import.meta.env.VITE_DISABLE_FIREBASE_AUTH === "true") return false;
+  if (import.meta.env.DEV && import.meta.env.VITE_DISABLE_FIREBASE_AUTH === "true") return false;
   return Boolean(
     firebaseConfig.apiKey &&
     firebaseConfig.authDomain &&
