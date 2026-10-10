@@ -43,7 +43,7 @@ for (const reversed of [false, true]) {
     if (reversed) inputs.reverse();
     const result = await handleGlobalDroppedFiles(inputs);
     assert.deepEqual(requests(), ["/api/local/suno?audioOnly=1"]);
-    assert.equal(result.alignedVideos, 0);
+    assert.equal(result.audioOnlyVideos, 0);
     assert.equal(result.reusedVideoTimings, 1);
     assert.equal(songs()[0].timing.segments[0].primary, "Keep");
     const segment = songs()[1].timing.segments[0];
@@ -56,26 +56,27 @@ for (const reversed of [false, true]) {
   });
 }
 
-test("batch imports pair by filename or title and align only videos without timings", async t => {
+test("batch imports pair by filename or title and leave unmatched videos for explicit lyric import", async t => {
   const requests = mockExtractor(t);
   const result = await handleGlobalDroppedFiles([
     video("First.mp4"), video("Second.mp4"), video("Third.mp4"),
     json("export.json", timing("Segundo", "Second")), json("First_timings.json", timing("Primero")),
   ]);
-  assert.deepEqual(requests(), ["/api/local/suno?audioOnly=1", "/api/local/suno?audioOnly=1", "/api/local/suno"]);
+  assert.deepEqual(requests(), ["/api/local/suno?audioOnly=1", "/api/local/suno?audioOnly=1", "/api/local/suno?audioOnly=1"]);
   assert.equal(result.reusedVideoTimings, 2);
-  assert.equal(result.alignedVideos, 1);
-  assert.deepEqual(songs().map(song => [song.name, song.timing.segments[0].primary]), [
-    ["First.m4a", "Primero"], ["Second.m4a", "Segundo"], ["Third.m4a", "Aligned"],
+  assert.equal(result.audioOnlyVideos, 1);
+  assert.deepEqual(songs().map(song => [song.name, song.timing?.segments[0].primary]), [
+    ["First.m4a", "Primero"], ["Second.m4a", "Segundo"], ["Third.m4a", undefined],
   ]);
 });
 
-test("video alone and untimed lyrics retain local alignment", async t => {
+test("video alone does not invoke transcription or invent timed lyrics", async t => {
   const requests = mockExtractor(t);
   await handleGlobalDroppedFiles([video("Solo.mp4")]);
   await handleGlobalDroppedFiles([video("Other.mp4"), json("Other.json", { segments: [{ primary: "Untimed" }] })]);
-  assert.deepEqual(requests(), ["/api/local/suno", "/api/local/suno"]);
-  assert.equal(songs()[1].timing.segments[0].primary, "Aligned");
+  assert.deepEqual(requests(), ["/api/local/suno?audioOnly=1", "/api/local/suno?audioOnly=1"]);
+  assert.equal(songs()[0].timing, null);
+  assert.equal(songs()[1].timing.segments[0].primary, "Untimed");
 });
 
 test("ambiguous timing files stop before any video processing", async t => {
@@ -95,7 +96,7 @@ test("a timing file cannot silently pair with two different videos", async t => 
   assert.deepEqual(requests(), []);
 });
 
-test("malformed timing JSON fails before starting OCR", async t => {
+test("malformed timing JSON fails before starting audio extraction", async t => {
   const requests = mockExtractor(t);
   await assert.rejects(handleGlobalDroppedFiles([
     video("Song.mp4"), new File(['{"segments": ['], "Song.json", { type: "application/json" }),

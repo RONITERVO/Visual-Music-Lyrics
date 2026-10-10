@@ -163,9 +163,8 @@ export default function App() {
       const state = useStore.getState();
       const id = first?.id || state.selectedAudioId || state.audioFiles[0]?.id;
       if (id) await loadSongSegments(id);
-      setMediaImportMessage(result.alignedVideos
-        ? "Audio and bilingual lyrics added. Review the machine-aligned text and timing before publishing."
-        : result.reusedVideoTimings ? "Audio and supplied lyrics added. OCR and Whisper were skipped."
+      setMediaImportMessage(result.reusedVideoTimings ? "Audio and supplied lyrics added. Review the timings before exporting."
+        : result.audioOnlyVideos ? "Original audio added. Add Gemini timing JSON, or use the hosted ElevenLabs workflow for transcription."
         : result.audioFiles.length || result.transcriptFiles.length ? "Files added." : "Choose audio, a Suno video, or a timing JSON, LRC, SRT or VTT file.");
     } catch (error) {
       setMediaImportMessage(controller.signal.aborted ? "Import canceled." : getBackendErrorMessage(error));

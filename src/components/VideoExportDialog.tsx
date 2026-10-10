@@ -11,6 +11,7 @@ export function VideoExportDialog({ song, segments, theme, onClose, onBusyChange
   const dialog = useRef<HTMLDialogElement>(null);
   const controller = useRef<AbortController | null>(null);
   const [mode, setMode] = useState<"publish" | "lossless">("publish");
+  const [audio, setAudio] = useState<"preserve" | "aac">("preserve");
   const [size, setSize] = useState(720);
   const [aspect, setAspect] = useState("portrait");
   const [progress, setProgress] = useState<VideoExportProgress | null>(null);
@@ -24,7 +25,7 @@ export function VideoExportDialog({ song, segments, theme, onClose, onBusyChange
     try {
       if (result) { await removeVideoExport(result.id); setResult(null); }
       const tall = size === 720 ? 1280 : 1920;
-      const video = await exportVideo({ file: song.file, title: getBaseName(song.name), segments, theme, mode,
+      const video = await exportVideo({ file: song.file, title: getBaseName(song.name), segments, theme, mode, audio,
         width: aspect === "landscape" ? tall : size, height: aspect === "portrait" ? tall : size, fps: 30,
       }, abort.signal, setProgress);
       setResult(video);
@@ -40,11 +41,18 @@ export function VideoExportDialog({ song, segments, theme, onClose, onBusyChange
     {!isLoopbackApp() && <p role="alert">Fast export runs in the local desktop app. Open your library there to export.</p>}
     <fieldset disabled={busy}>
       <label>Video format<select aria-label="Video format" value={mode} onChange={e => setMode(e.target.value as typeof mode)}>
-        <option value="publish">Publishing MP4 · high quality</option><option value="lossless">Lossless master · MKV</option>
+        <option value="publish">H.264 · high quality</option><option value="lossless">Lossless RGB · larger</option>
       </select></label>
       <p className="gemini-import-note">{mode === "publish"
-        ? "H.264 video for sharing. High quality, not mathematically lossless. AAC audio is copied; other audio is converted to AAC."
-        : "Preserves rendered RGB pixels and copies the original audio stream. Larger files; use MP4 for broad publishing compatibility."}</p>
+        ? "High-quality H.264 video. Resolution and video compression do not change the audio."
+        : "Preserves rendered RGB pixels. Larger MKV files."}</p>
+      <label>Audio quality<select aria-label="Audio quality" value={audio} onChange={e => setAudio(e.target.value as typeof audio)}>
+        <option value="preserve">Preserve source audio · no re-encoding</option>
+        <option value="aac">AAC 320 kbps · compatible MP4</option>
+      </select></label>
+      <p className="gemini-import-note">{audio === "preserve"
+        ? "Copies the original audio stream. Uses MP4 for AAC with H.264 video, or MKV for other audio. FLAC/PCM stays lossless."
+        : "Keeps existing AAC unchanged; converts other audio once to 320 kbps AAC. H.264 video uses MP4; lossless RGB uses MKV."}</p>
       <label>Shape<select aria-label="Video shape" value={aspect} onChange={e => setAspect(e.target.value)}>
         <option value="portrait">Portrait · 9:16</option><option value="landscape">Landscape · 16:9</option><option value="square">Square · 1:1</option>
       </select></label>

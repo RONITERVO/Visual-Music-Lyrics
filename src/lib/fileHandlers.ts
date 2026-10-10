@@ -5,7 +5,7 @@ import { useStore, GlobalState } from "./store";
 import { AUDIO_EXTENSIONS, TRANSCRIPT_EXTENSIONS } from "./fileSystem";
 import { getExtension, getBaseName, getAudioMimeType, getFileRelativePath, getTopFolderName, createId, getSongFileKey } from "./utils";
 import { parseTranscript } from "./parser";
-import { extractLocalSunoAudio, importLocalSuno } from "./localSuno";
+import { extractLocalSunoAudio } from "./localSuno";
 
 function isVideoFile(file: File) {
     return file.type.startsWith("video/") || ["mp4", "mkv", "mov"].includes(getExtension(file.name));
@@ -25,7 +25,7 @@ function companionTiming(video: File, candidates: any[], allowSinglePair: boolea
 export async function handleGlobalDroppedFiles(files: File[], signal?: AbortSignal) {
     const audioFiles: File[] = [];
     const transcriptFiles = files.filter(file => !isVideoFile(file) && TRANSCRIPT_EXTENSIONS.has(getExtension(file.name)));
-    // Inspect supplied timings before starting any expensive video alignment.
+    // Validate supplied timings before extracting video audio.
     const supplied = await Promise.all(transcriptFiles.map(async file => ensureParsed(createTranscriptItem(file))));
     const timed = supplied.filter(item => item.segments?.length && item.segments.every((segment: any) =>
         Number.isFinite(segment.start) && segment.start >= 0 && Number.isFinite(segment.end) && segment.end > segment.start));
@@ -40,7 +40,7 @@ export async function handleGlobalDroppedFiles(files: File[], signal?: AbortSign
         companions.set(video, timing.file);
     }
     const audioTimings = new Map<File, File>();
-    let alignedVideos = 0;
+    let audioOnlyVideos = 0;
     let reusedVideoTimings = 0;
 
     for (const file of files) {
@@ -54,12 +54,9 @@ export async function handleGlobalDroppedFiles(files: File[], signal?: AbortSign
                 audioTimings.set(audio, timing);
                 reusedVideoTimings++;
             } else {
-                useStore.setState({ commitFeedback: `Extracting audio and bilingual lyrics from ${file.name}…` });
-                const imported = await importLocalSuno(file, signal);
-                audioFiles.push(imported.audio);
-                transcriptFiles.push(imported.timing);
-                audioTimings.set(imported.audio, imported.timing);
-                alignedVideos++;
+                useStore.setState({ commitFeedback: `Extracting original audio from ${file.name}…` });
+                audioFiles.push(await extractLocalSunoAudio(file, signal));
+                audioOnlyVideos++;
             }
         } else if (AUDIO_EXTENSIONS.has(ext) || file.type.startsWith("audio/")) {
             audioFiles.push(file);
@@ -74,7 +71,7 @@ export async function handleGlobalDroppedFiles(files: File[], signal?: AbortSign
     });
     await addTranscriptFiles(transcriptFiles, addedSongs, timingTargets);
     await pairOrphanTextItems();
-    return { addedSongs, audioFiles, transcriptFiles, alignedVideos, reusedVideoTimings };
+    return { addedSongs, audioFiles, transcriptFiles, audioOnlyVideos, reusedVideoTimings };
 }
 
 async function ensureParsed(item: any) {

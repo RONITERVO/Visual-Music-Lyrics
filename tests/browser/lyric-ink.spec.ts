@@ -62,3 +62,33 @@ test("export preserves complete letter strokes and reflection blur", async ({ pa
   }, segment);
   expect(difference).toBe(0);
 });
+
+
+test("English-only export keeps the complete first lyric below the waterline", async ({ page }) => {
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const rendererModule = "/src/lib/video/VideoRenderer.ts", spectrumModule = "/src/lib/video/OfflineSpectrum.ts";
+    const { createVideoRenderer } = await import(/* @vite-ignore */ rendererModule);
+    const { OfflineSpectrum } = await import(/* @vite-ignore */ spectrumModule);
+    const segment = { id: "english-intro", start: 1, end: 8, primary: "", translation: "Hello world", translationTiming: "sung",
+      words: [], translationWords: [{ value: "Hello", start: 1, end: 2 }, { value: "world", start: 2, end: 3 }] };
+    const options = { width: 720, height: 1280, theme: "sketchbook", title: "English intro", segments: [segment], duration: 10, fps: 30 };
+    const actual = await createVideoRenderer(options), reference = await createVideoRenderer(options);
+    // Completed words need no reveal mask. An unclipped reference detects a
+    // misplaced English lane even when all timeline boundaries are correct.
+    reference.canvas.getContext("2d")!.clip = () => {};
+    // Compare letter ink, excluding sub-pixel blur tails at the water boundary.
+    // The preceding regression separately covers the normal reflection blur.
+    for (const renderer of [actual, reference]) {
+      Object.defineProperty(renderer.canvas.getContext("2d")!, "filter", { get: () => "none", set: () => {} });
+    }
+    const frame = actual.draw(4, new OfflineSpectrum([new Float32Array(44100 * 10)], 44100));
+    reference.draw(4, new OfflineSpectrum([new Float32Array(44100 * 10)], 44100));
+    const a = actual.pixels(), b = reference.pixels();
+    let changed = 0; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) changed++;
+    actual.destroy(); reference.destroy();
+    return { changed, translationTop: frame.layout.translation.top, horizon: frame.layout.horizon };
+  });
+  expect(result.translationTop).toBeGreaterThan(result.horizon);
+  expect(result.changed).toBe(0);
+});

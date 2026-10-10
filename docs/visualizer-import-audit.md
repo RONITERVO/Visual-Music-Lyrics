@@ -1,5 +1,7 @@
 # Visualizer and Suno import review — 2026-10-02
 
+> Historical audit: its test counts, dependency advisories and OCR/Whisper workflow describe the October 2 state. See [the October 10 follow-up](workflow-and-readiness.md) for current behavior and validation.
+
 **Release decision: local preview is available; production readiness is not established.** No deployment was performed.
 
 ## Fidelity to Kestrel

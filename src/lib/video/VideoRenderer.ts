@@ -61,7 +61,9 @@ export async function createVideoRenderer(options: VideoRenderOptions) {
     const translationWords = segment.translationWords?.length ? segment.translationWords
       : segment.translationTiming === "sung" ? [] : estimatedMusicLyricWords(segment.translation || segment.secondary, segment.start, segment.end);
     const primary = textLayout(primaryWords, width > 600 ? 42 : sketch ? 38 : 30, height * .37, height * .22);
-    const horizon = resolveSketchbookHorizon(primary.top + primary.height + 7, height);
+    // English-only cues have no primary bounds. Use the same fallback waterline
+    // as draw(), otherwise their reflection is placed above its clipping area.
+    const horizon = resolveSketchbookHorizon(primary.words.length ? primary.top + primary.height + 7 : undefined, height);
     const translationTop = sketch ? horizon + 15 : primary.top + primary.height + 20;
     const translation = textLayout(translationWords, width > 600 ? 34 : sketch ? 32 : 24, translationTop,
       sketch ? (height - translationTop - 24) / .65 : height - translationTop - 35);
