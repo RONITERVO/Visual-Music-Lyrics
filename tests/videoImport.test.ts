@@ -20,8 +20,8 @@ beforeEach(() => {
 function mockExtractor(t: TestContext) {
   t.mock.method(globalThis, "fetch", async (url: string, options: RequestInit) => {
     const name = await (options.body as File).text();
-    return Response.json({ audioBase64: Buffer.from(name).toString("base64"),
-      ...(url.includes("audioOnly=1") ? {} : { timing: timing("Aligned") }) });
+    assert.ok(url.includes("audioOnly=1"));
+    return new Response(name, { headers: { "Content-Type": "audio/mp4", "X-Audio-Extension": "m4a" } });
   });
   // The importer deliberately restricts video processing to the local app.
   const priorWindow = Object.getOwnPropertyDescriptor(globalThis, "window");

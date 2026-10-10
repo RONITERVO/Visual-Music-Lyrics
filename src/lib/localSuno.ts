@@ -9,10 +9,13 @@ export async function extractLocalSunoAudio(file: File, signal?: AbortSignal): P
   const response = await fetch("/api/local/suno?audioOnly=1", {
     method: "POST", headers: { "Content-Type": "application/octet-stream", "X-Local-Import": "suno" }, body: file, signal,
   });
-  const data = await response.json().catch(() => null);
-  if (!response.ok || !data?.audioBase64 || data.timing) {
+  const extension = response.headers.get("X-Audio-Extension");
+  const mimeType = response.headers.get("Content-Type")?.split(";")[0];
+  if (!response.ok || !extension || !/^(m4a|mp3|flac|ogg|wav)$/.test(extension) || !mimeType?.startsWith("audio/")) {
+    const data = await response.json().catch(() => null);
     throw new Error(data?.error || "Start or restart the local app with npm run dev:local to extract audio without alignment.");
   }
-  const bytes = Uint8Array.from(atob(data.audioBase64), character => character.charCodeAt(0));
-  return new File([bytes], `${file.name.replace(/\.[^.]+$/, "")}.${data.extension || "m4a"}`, { type: data.mimeType || "audio/mp4", lastModified: file.lastModified });
+  const audio = await response.blob();
+  if (!audio.size) throw new Error("The extracted audio is empty.");
+  return new File([audio], `${file.name.replace(/\.[^.]+$/, "")}.${extension}`, { type: mimeType, lastModified: file.lastModified });
 }

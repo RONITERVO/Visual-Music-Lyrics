@@ -89,7 +89,7 @@ test("dropping a video with converted JSON skips OCR and preserves bilingual pla
       await route.fulfill({ status: 500, json: { error: "OCR must not run with supplied timings" } });
       return;
     }
-    await route.fulfill({ json: { audioBase64: silentAudio().toString("base64"), mimeType: "audio/mp4" } });
+    await route.fulfill({ body: silentAudio(), headers: { "Content-Type": "audio/wav", "X-Audio-Extension": "wav" } });
   });
   const converted = { segments: [{ start: 1.1, end: 4.2, primary: "Hola mundo", translation: "Hello world", translationTiming: "sung",
     words: [{ value: "Hola", start: 1.1, end: 2.15 }, { value: "mundo", start: 2.15, end: 3.2, uncertain: true }],
@@ -124,9 +124,9 @@ test("video alone adds preserved audio without automatic transcription", async (
   page.on("request", request => {
     if (/\/api\/(translate|elevenlabs)/.test(request.url())) paidRequests.push(request.url());
   });
-  await page.route("**/api/local/suno**", route => route.fulfill({ json: {
-    audioBase64: silentAudio().toString("base64"), mimeType: "audio/wav", extension: "wav",
-  } }));
+  await page.route("**/api/local/suno**", route => route.fulfill({
+    body: silentAudio(), headers: { "Content-Type": "audio/wav", "X-Audio-Extension": "wav" },
+  }));
   await page.goto("/");
   await page.getByLabel("Add audio, Suno video or lyric timing files").setInputFiles({
     name: "Audio only.mkv", mimeType: "video/x-matroska", buffer: Buffer.from("video fixture"),
@@ -147,4 +147,19 @@ test("video alone adds preserved audio without automatic transcription", async (
   expect(song.type).toBe("audio/wav");
   expect(song.timing).toBeNull();
   expect(paidRequests).toEqual([]);
+});
+
+test("mixed video imports report songs without lyric timings", async ({ page }) => {
+  await page.route("**/api/local/suno**", route => route.fulfill({
+    body: silentAudio(), headers: { "Content-Type": "audio/wav", "X-Audio-Extension": "wav" },
+  }));
+  await page.goto("/");
+  await page.getByLabel("Add audio, Suno video or lyric timing files").setInputFiles([
+    { name: "First.mp4", mimeType: "video/mp4", buffer: Buffer.from("fixture") },
+    { name: "Second.mp4", mimeType: "video/mp4", buffer: Buffer.from("fixture") },
+    { name: "First.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({
+      segments: [{ start: 1, end: 5, primary: "Supplied lyrics" }],
+    })) },
+  ]);
+  await expect(page.getByRole("status")).toContainText("1 with supplied lyrics; 1 without lyric timings");
 });

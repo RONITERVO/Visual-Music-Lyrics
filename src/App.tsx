@@ -163,7 +163,9 @@ export default function App() {
       const state = useStore.getState();
       const id = first?.id || state.selectedAudioId || state.audioFiles[0]?.id;
       if (id) await loadSongSegments(id);
-      setMediaImportMessage(result.reusedVideoTimings ? "Audio and supplied lyrics added. Review the timings before exporting."
+      setMediaImportMessage(result.reusedVideoTimings && result.audioOnlyVideos
+        ? `Audio added: ${result.reusedVideoTimings} with supplied lyrics; ${result.audioOnlyVideos} without lyric timings. Add timings for those songs and review before exporting.`
+        : result.reusedVideoTimings ? "Audio and supplied lyrics added. Review the timings before exporting."
         : result.audioOnlyVideos ? "Original audio added. Add Gemini timing JSON, or use the hosted ElevenLabs workflow for transcription."
         : result.audioFiles.length || result.transcriptFiles.length ? "Files added." : "Choose audio, a Suno video, or a timing JSON, LRC, SRT or VTT file.");
     } catch (error) {
