@@ -105,3 +105,9 @@ An initial run was interrupted: its export dialog disappeared and its encoder wa
 The canvas scene engines and lyric clock are shared with listening playback, but canvas-exported text is not a pixel-identical screenshot of browser CSS. The local exporter remains a CPU FFmpeg/frame-batch path. A measured full-song benchmark is useful for readiness, not proof that every machine/theme/resolution is optimal.
 
 No live paid Scribe/Gemini calls, Firebase login, Stripe payment, production deployment or physical mobile-browser check was performed in this audit. Existing NoFocus native-phone testing does not substitute for hosted Android Chrome/iOS Safari testing.
+
+### Post-merge import review (2026-10-10)
+
+The follow-up to #9 streams extracted audio as a binary response instead of base64 JSON, holding the temporary file and import reservation until transfer finishes or is canceled. The browser receives a Blob. A real 20-minute 48 kHz stereo ALAC fixture expands to more than 460 MB of WAV and imports successfully without a whole-file server Buffer or base64 string. Mixed batches explicitly report both videos with supplied lyrics and videos without timings.
+
+Validation: 30 Node tests, 20 Edge browser tests, TypeScript checks, app and media-server builds passed. The Cloud Functions code is unchanged. No provider calls or deployment were performed.

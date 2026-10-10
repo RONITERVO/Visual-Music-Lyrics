@@ -56,9 +56,10 @@ for (const floating of [false, true]) test(`capture ${floating ? "float PCM" : "
     const imported = await fetch(base + "/api/local/suno?audioOnly=1", { method: "POST", headers: {
       "Content-Type": "application/octet-stream", "X-Local-Import": "suno",
     }, body: source });
-    const payload = await imported.json(); assert.equal(imported.status, 200, JSON.stringify(payload));
-    assert.equal(payload.extension, floating ? "wav" : "flac"); assert.equal(payload.mimeType, floating ? "audio/wav" : "audio/flac");
-    const audio = Buffer.from(payload.audioBase64, "base64"); assert.deepEqual(decode(audio), samples);
+    assert.equal(imported.status, 200);
+    assert.equal(imported.headers.get("X-Audio-Extension"), floating ? "wav" : "flac");
+    assert.equal(imported.headers.get("Content-Type"), floating ? "audio/wav" : "audio/flac");
+    const audio = Buffer.from(await imported.arrayBuffer()); assert.deepEqual(decode(audio), samples);
     const created = await request("/jobs", { method: "POST", headers: { "Content-Type": "application/octet-stream",
       "X-Export-Config": JSON.stringify({ width: 320, height: 320, fps: 30, duration: 1, mode: "publish", audio: "preserve" }) }, body: audio });
     const job = await created.json(); assert.equal(created.status, 200, JSON.stringify(job)); id = job.id;

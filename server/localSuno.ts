@@ -1,5 +1,7 @@
 import express, { type Express, type Request } from "express";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
 import os from "node:os";
 import path from "node:path";
 import { extractPreservedAudio } from "./audioPreservation";
@@ -45,10 +47,21 @@ export function registerLocalSuno(app: Express) {
       await writeFile(input, req.body);
       req.body = undefined;
       const preserved = await extractPreservedAudio(input, directory, controller.signal);
-      const audio = await readFile(preserved.output);
-      res.json({ audioBase64: audio.toString("base64"), mimeType: preserved.mimeType, extension: preserved.extension });
+      // Stream while holding the worker reservation and temporary file alive. Large
+      // lossless audio must never become a base64 string or a whole-file Buffer.
+      res.setHeader("Content-Type", preserved.mimeType);
+      res.setHeader("X-Audio-Extension", preserved.extension);
+      res.setHeader("Content-Length", (await stat(preserved.output)).size);
+      await pipeline(createReadStream(preserved.output), res, { signal: controller.signal });
     } catch (error) {
-      if (!res.destroyed) res.status(422).json({ error: error instanceof Error ? error.message : "Local import failed." });
+      if (!res.destroyed) {
+        if (res.headersSent) res.destroy();
+        else {
+          res.removeHeader("Content-Length");
+          res.removeHeader("X-Audio-Extension");
+          res.status(422).json({ error: error instanceof Error ? error.message : "Local import failed." });
+        }
+      }
     } finally {
       res.off("close", onClose);
       // This directory is exclusively created by mkdtemp for this request.
