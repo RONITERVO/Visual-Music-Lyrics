@@ -102,7 +102,7 @@ test("dropping a video with converted JSON skips OCR and preserves bilingual pla
     dataTransfer.items.add(new File([JSON.stringify(converted)], "converted-review.json", { type: "application/json" }));
     window.dispatchEvent(new DragEvent("drop", { dataTransfer, bubbles: true }));
   }, converted);
-  await expect(page.getByRole("status")).toContainText("OCR and Whisper were skipped");
+  await expect(page.getByRole("status")).toContainText("Audio and supplied lyrics added. Review the timings");
   expect(requests).toHaveLength(1);
   expect(requests[0]).toContain("audioOnly=1");
   await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -116,4 +116,35 @@ test("dropping a video with converted JSON skips OCR and preserves bilingual pla
   await page.evaluate(() => { const audio = document.querySelector("audio")!; audio.pause(); audio.currentTime = 3.15; });
   await expect(page.locator(".music-lyrics-translation button.active")).toContainText("Hello");
   expect(requests).toHaveLength(1);
+});
+
+
+test("video alone adds preserved audio without automatic transcription", async ({ page }) => {
+  const paidRequests: string[] = [];
+  page.on("request", request => {
+    if (/\/api\/(translate|elevenlabs)/.test(request.url())) paidRequests.push(request.url());
+  });
+  await page.route("**/api/local/suno**", route => route.fulfill({ json: {
+    audioBase64: silentAudio().toString("base64"), mimeType: "audio/wav", extension: "wav",
+  } }));
+  await page.goto("/");
+  await page.getByLabel("Add audio, Suno video or lyric timing files").setInputFiles({
+    name: "Audio only.mkv", mimeType: "video/x-matroska", buffer: Buffer.from("video fixture"),
+  });
+  await expect(page.getByRole("status")).toContainText("Original audio added. Add Gemini timing JSON");
+  await page.waitForFunction(() => document.querySelector("audio")!.readyState >= 2);
+  await page.evaluate(() => document.querySelector("audio")!.play());
+  await expect.poll(() => page.evaluate(() => document.querySelector("audio")!.currentTime)).toBeGreaterThan(.1);
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector("audio")!.readyState >= 2);
+  const song = await page.evaluate(async () => {
+    const module = "/src/lib/store.ts";
+    const { useStore } = await import(/* @vite-ignore */ module);
+    const stored = useStore.getState().audioFiles[0];
+    return { name: stored.name, type: stored.file.type, timing: stored.timing };
+  });
+  expect(song.name).toBe("Audio only.wav");
+  expect(song.type).toBe("audio/wav");
+  expect(song.timing).toBeNull();
+  expect(paidRequests).toEqual([]);
 });

@@ -34,6 +34,8 @@ test("portrait export includes lyrics and timer, downloads video, and can cancel
   await expect(dialog).toBeVisible();
   await expect(dialog.getByLabel("Video shape")).toHaveValue("portrait");
   await expect(dialog.getByLabel("Video resolution")).toHaveValue("720");
+  await expect(dialog.getByLabel("Audio quality")).toHaveValue("preserve");
+  await dialog.getByLabel("Audio quality").selectOption("aac");
   await dialog.getByRole("button", { name: "Export video", exact: true }).click();
   await expect(dialog.getByRole("link", { name: "Download MP4" })).toBeVisible({ timeout: 90_000 });
   await expect(dialog.getByRole("status")).toContainText("Video ready");

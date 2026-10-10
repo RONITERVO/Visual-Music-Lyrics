@@ -72,7 +72,7 @@ test("local export encodes MP4 and pixel/audio-exact lossless video, rejects inc
     assert.equal((await request("/capabilities", { headers: { Origin: "https://example.com" } })).status, 403);
     assert.equal((await fetch(base + "/jobs", { method: "POST" })).status, 400);
     for (const mode of ["lossless", "publish"] as const) {
-      const created = await request("/jobs", { method: "POST", headers: { "Content-Type": "application/octet-stream", "X-Export-Config": JSON.stringify({ width: 320, height: 320, duration: 1, fps: 30, mode }) }, body: audio });
+      const created = await request("/jobs", { method: "POST", headers: { "Content-Type": "application/octet-stream", "X-Export-Config": JSON.stringify({ width: 320, height: 320, duration: 1, fps: 30, mode, audio: mode === "publish" ? "aac" : "preserve" }) }, body: audio });
       assert.equal(created.status, 200, await created.clone().text());
       const { id } = await created.json(); ids.push(id);
       assert.equal((await request(`/jobs/${id}/finish`, { method: "POST" })).status, 409);

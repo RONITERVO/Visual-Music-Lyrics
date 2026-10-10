@@ -1,10 +1,8 @@
 import express, { type Express, type Request } from "express";
-import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import ffmpeg from "ffmpeg-static";
+import { extractPreservedAudio } from "./audioPreservation";
 
 export function isLocalImportRequest(req: Pick<Request, "socket" | "headers">) {
   const peer = req.socket.remoteAddress;
@@ -19,8 +17,6 @@ export function isLocalImportRequest(req: Pick<Request, "socket" | "headers">) {
 /** Deliberately absent from production and Cloud Run. Accept file bytes, never paths. */
 export function registerLocalSuno(app: Express) {
   if (process.env.NODE_ENV === "production" || process.env.LOCAL_MEDIA_IMPORT !== "true") return;
-  const python = process.env.LOCAL_LYRICS_PYTHON || path.resolve(".venv-lyrics", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
-  const model = process.env.LOCAL_WHISPER_MODEL || "";
   const tempRoot = path.resolve(os.tmpdir());
   let busy = false;
   app.use("/api/local", (req, res, next) => {
@@ -29,18 +25,15 @@ export function registerLocalSuno(app: Express) {
     next();
   });
   app.get("/api/local/capabilities", (_req, res) => {
-    res.json({ suno: existsSync(python) && existsSync(model), audioExtraction: true, busy });
+    res.json({ audioExtraction: true, busy });
   });
   // Reserve the single worker before buffering the upload, including concurrent requests.
   app.post("/api/local/suno", (req, res, next) => {
     if (busy) { res.status(409).json({ error: "A local video import is already running." }); return; }
-    if (req.query.audioOnly !== "1" && (!existsSync(python) || !existsSync(model))) {
-      res.status(503).json({ error: "Configure LOCAL_LYRICS_PYTHON and LOCAL_WHISPER_MODEL for local Suno import." }); return;
-    }
     if (req.headers["x-local-import"] !== "suno") { res.sendStatus(400); return; }
     busy = true;
     next();
-  }, express.raw({ type: "application/octet-stream", limit: "100mb" }), async (req, res) => {
+  }, express.raw({ type: "application/octet-stream", limit: "768mb" }), async (req, res) => {
     let directory = "";
     const controller = new AbortController();
     const onClose = () => { if (!res.writableEnded) controller.abort(); };
@@ -51,27 +44,9 @@ export function registerLocalSuno(app: Express) {
       const input = path.join(directory, "source.mp4");
       await writeFile(input, req.body);
       req.body = undefined;
-      const audioOnly = req.query.audioOnly === "1";
-      await new Promise<void>((resolve, reject) => {
-        const ffmpegPath = process.env.FFMPEG_PATH || ffmpeg || "ffmpeg";
-        const command = audioOnly ? ffmpegPath : python;
-        const args = audioOnly
-          ? ["-nostdin", "-hide_banner", "-loglevel", "error", "-i", input, "-map", "0:a:0", "-vn", "-c:a", "aac", "-b:a", "192k", path.join(directory, "audio.m4a")]
-          : [path.resolve("scripts/visual_lyrics_extractor.py"), input, "--output-dir", directory, "--model", model, "--ffmpeg", ffmpegPath];
-        const child = spawn(command, args, {
-          windowsHide: true, signal: controller.signal, timeout: (audioOnly ? 3 : 15) * 60_000,
-          env: { ...process.env, PYTHONIOENCODING: "utf-8" }, stdio: ["ignore", "pipe", "pipe"],
-        });
-        let diagnostic = "";
-        child.stderr.on("data", chunk => { diagnostic = (diagnostic + chunk.toString()).slice(-5000); });
-        child.stdout.on("data", () => {});
-        child.once("error", reject);
-        child.once("close", code => code === 0 ? resolve() : reject(new Error(
-          `Local ${audioOnly ? "audio" : "lyric"} extraction failed. ${diagnostic.split(/\r?\n/).filter(Boolean).slice(-1)[0] || "Check local media dependencies."}`)));
-      });
-      const timing = audioOnly ? undefined : JSON.parse(await readFile(path.join(directory, "timing.json"), "utf8"));
-      const audio = await readFile(path.join(directory, "audio.m4a"));
-      res.json({ timing, audioBase64: audio.toString("base64"), mimeType: "audio/mp4" });
+      const preserved = await extractPreservedAudio(input, directory, controller.signal);
+      const audio = await readFile(preserved.output);
+      res.json({ audioBase64: audio.toString("base64"), mimeType: preserved.mimeType, extension: preserved.extension });
     } catch (error) {
       if (!res.destroyed) res.status(422).json({ error: error instanceof Error ? error.message : "Local import failed." });
     } finally {
@@ -85,6 +60,6 @@ export function registerLocalSuno(app: Express) {
     }
   }, (error: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     busy = false;
-    res.status(error.status || 400).json({ error: error.type === "entity.too.large" ? "Video exceeds the 100 MB import limit." : "Could not read video upload." });
+    res.status(error.status || 400).json({ error: error.type === "entity.too.large" ? "Video exceeds the 768 MB import limit." : "Could not read video upload." });
   });
 }

@@ -5,7 +5,7 @@ import express from "express";
 import ffmpeg from "ffmpeg-static";
 import { registerLocalSuno } from "../server/localSuno";
 
-test("Gemini video import extracts only audio with no Python or Whisper configured", async () => {
+for (const suffix of ["", "?audioOnly=1"]) test(`video import ${suffix || "without JSON"} extracts only audio with no Python or Whisper configured`, async () => {
   const prior = { ...process.env };
   process.env.NODE_ENV = "test";
   process.env.LOCAL_MEDIA_IMPORT = "true";
@@ -21,17 +21,23 @@ test("Gemini video import extracts only audio with no Python or Whisper configur
       "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=22050", "-t", "1", "-c:v", "mpeg4", "-c:a", "aac",
       "-f", "mp4", "-movflags", "frag_keyframe+empty_moov", "pipe:1"], { windowsHide: true });
     assert.equal(fixture.status, 0, fixture.stderr.toString());
-    const forbidden = await fetch(`${base}/api/local/suno?audioOnly=1`, {
+    const forbidden = await fetch(`${base}/api/local/suno${suffix}`, {
       method: "POST", headers: { Origin: "https://foreign.example", "Content-Type": "application/octet-stream", "X-Local-Import": "suno" }, body: fixture.stdout,
     });
     assert.equal(forbidden.status, 403);
-    const response = await fetch(`${base}/api/local/suno?audioOnly=1`, {
+    const response = await fetch(`${base}/api/local/suno${suffix}`, {
       method: "POST", headers: { "Content-Type": "application/octet-stream", "X-Local-Import": "suno" }, body: fixture.stdout,
     });
     const data = await response.json();
     assert.equal(response.status, 200, JSON.stringify(data));
     assert.equal(data.timing, undefined);
     assert.equal(data.mimeType, "audio/mp4");
+    assert.equal(data.extension, "m4a");
+    const packets = (input: Buffer) => {
+      const result = spawnSync(ffmpeg!, ["-v", "error", "-i", "pipe:0", "-map", "0:a:0", "-c:a", "copy", "-f", "adts", "pipe:1"], { input, windowsHide: true });
+      assert.equal(result.status, 0, result.stderr.toString()); return result.stdout;
+    };
+    assert.deepEqual(packets(Buffer.from(data.audioBase64, "base64")), packets(fixture.stdout), "AAC packets must survive import without another lossy encode");
     const probe = spawnSync(ffmpeg!, ["-hide_banner", "-i", "pipe:0", "-f", "null", "-"], {
       input: Buffer.from(data.audioBase64, "base64"), windowsHide: true,
     });

@@ -6,30 +6,21 @@ import os from "node:os";
 import crypto from "node:crypto";
 import ffmpeg from "ffmpeg-static";
 import { isLocalImportRequest } from "./localSuno";
+import { firstAudioCodec, exportAudioPlan } from "./audioPreservation";
 
 export interface VideoConfig {
   width: number; height: number; fps: number; duration: number;
   mode: "publish" | "lossless";
+  audio?: "preserve" | "aac";
 }
 export function validateVideoConfig(value: any): VideoConfig {
   if (!value || !Number.isInteger(value.width) || !Number.isInteger(value.height)
     || value.width < 320 || value.height < 320 || value.width > 1920 || value.height > 1920
     || value.width % 2 || value.height % 2 || ![24, 30, 60].includes(value.fps)
     || typeof value.duration !== "number" || !Number.isFinite(value.duration) || value.duration <= 0 || value.duration > 1200
+    || (value.audio !== undefined && !["preserve", "aac"].includes(value.audio))
     || !["publish", "lossless"].includes(value.mode)) throw new Error("Invalid video size, frame rate, duration or format (maximum 20 minutes).");
-  return { width: value.width, height: value.height, fps: value.fps, duration: value.duration, mode: value.mode };
-}
-
-// Detect the actual first audio codec; an M4A extension can also contain ALAC.
-async function isAacAudio(input: string) {
-  return new Promise<boolean>((resolve, reject) => {
-    const child = spawn(process.env.FFMPEG_PATH || ffmpeg || "ffmpeg", ["-nostdin", "-hide_banner", "-protocol_whitelist", "file,pipe", "-i", input],
-      { windowsHide: true, timeout: 10_000, stdio: ["ignore", "ignore", "pipe"] });
-    let diagnostic = "";
-    child.stderr.on("data", chunk => { diagnostic = (diagnostic + chunk.toString()).slice(-32_000); });
-    child.once("error", reject);
-    child.once("close", () => resolve(/Stream #[^\r\n]+Audio:\s*aac\b/.test(diagnostic.match(/Stream #[^\r\n]+Audio:[^\r\n]+/)?.[0] || "")));
-  });
+  return { width: value.width, height: value.height, fps: value.fps, duration: value.duration, mode: value.mode, ...(value.audio === undefined ? {} : { audio: value.audio }) };
 }
 
 interface Job {
@@ -77,7 +68,7 @@ export function registerLocalVideo(app: Express) {
     catch (error) { res.status(400).json({ error: (error as Error).message }); return; }
     creating = true;
     next();
-  }, express.raw({ type: "application/octet-stream", limit: "100mb" }), async (req, res) => {
+  }, express.raw({ type: "application/octet-stream", limit: "256mb" }), async (req, res) => {
     let directory = "";
     try {
       if (!Buffer.isBuffer(req.body) || !req.body.length) throw new Error("Choose an audio file.");
@@ -87,16 +78,17 @@ export function registerLocalVideo(app: Express) {
       directory = await mkdtemp(path.join(tempRoot, "visual-music-video-"));
       const input = path.join(directory, "audio");
       await writeFile(input, req.body); req.body = undefined;
-      const copyAudio = config.mode === "lossless" || await isAacAudio(input);
-      const output = path.join(directory, config.mode === "lossless" ? "visualizer.mkv" : "visualizer.mp4");
+      const audioPlan = exportAudioPlan(await firstAudioCodec(input), config.mode, config.audio || "preserve");
+      const output = path.join(directory, `visualizer.${audioPlan.extension}`);
       const total = Math.ceil(config.duration * config.fps);
       const args = ["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pixel_format", "rgba",
         "-video_size", `${config.width}x${config.height}`, "-framerate", String(config.fps), "-i", "pipe:0",
         "-protocol_whitelist", "file,pipe", "-i", input, "-map", "0:v:0", "-map", "1:a:0",
         "-c:v", config.mode === "lossless" ? "libx264rgb" : "libx264", "-preset", "ultrafast", "-crf", config.mode === "lossless" ? "0" : "17",
         "-pix_fmt", config.mode === "lossless" ? "rgb24" : "yuv420p", "-threads", "4",
-        ...(copyAudio ? ["-c:a", "copy"] : ["-c:a", "aac", "-b:a", "256k"]),
-        "-t", String(config.duration), ...(config.mode === "publish" ? ["-movflags", "+faststart"] : []), output];
+        ...audioPlan.args,
+        // The frame pipe bounds video; never truncate original audio to Web Audio's resampled duration.
+        ...(audioPlan.extension === "mp4" ? ["-movflags", "+faststart"] : []), output];
       const child = spawn(process.env.FFMPEG_PATH || ffmpeg || "ffmpeg", args, { windowsHide: true, timeout: 30 * 60_000, stdio: ["pipe", "pipe", "pipe"] });
       const job: Job = { id: crypto.randomUUID(), directory, output, config, child, frames: 0, total,
         uploading: false, state: "rendering", error: "", done: Promise.resolve() };
@@ -110,13 +102,13 @@ export function registerLocalVideo(app: Express) {
       });
       void job.done.then(() => { job.state = "ready"; touch(job); }, error => { job.state = "error"; job.error = error.message; touch(job); });
       jobs.set(job.id, job); touch(job);
-      if (res.destroyed) await cleanup(job); else res.json({ id: job.id, totalFrames: total });
+      if (res.destroyed) await cleanup(job); else res.json({ id: job.id, totalFrames: total, extension: audioPlan.extension });
     } catch (error) {
       if (directory) await cleanDirectory(directory).catch(() => {});
       if (!res.destroyed) res.status(422).json({ error: (error as Error).message });
     } finally { creating = false; }
   }, (error: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    creating = false; res.status(error.status || 400).json({ error: "Could not read audio (100 MB maximum)." });
+    creating = false; res.status(error.status || 400).json({ error: "Could not read audio (256 MB maximum)." });
   });
   router.use("/jobs/:id", (req, res, next) => {
     const job = jobs.get(req.params.id);

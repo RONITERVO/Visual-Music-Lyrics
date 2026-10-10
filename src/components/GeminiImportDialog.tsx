@@ -120,6 +120,7 @@ export function GeminiImportDialog({ draft, onClose, onImported }: {
       <button type="button" aria-label="Close Gemini import" disabled={busy} onClick={onClose}>×</button>
     </div>
     <p>Turn your Gemini export into Spanish above and sung English below. Conversion stays on this device and uses no API credits.</p>
+    <p className="gemini-import-note">Gemini can get the words right but the timings wrong. Review robotic vocals, long instrumental gaps and longer songs especially carefully. If you have reviewed ElevenLabs timings, keep those anchors when correcting words. Import validates the format, not vocal accuracy.</p>
     <details className="gemini-prompt-guide" open={!draft.text.trim() || undefined}>
       <summary>Gemini prompt and quick instructions</summary>
       <ol>
